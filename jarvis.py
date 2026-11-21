@@ -1301,7 +1301,7 @@ ORB_WARM = (150, 105, 70)
 ORB_STATE = "idle"
 VOICE_STOP = False
 GUI_SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gui_settings.json")
-GUI_SUGGESTIONS = ("Открой YouTube", "Открой калькулятор", "Открой блокнот", "Как дела?", "Сколько времени?")
+GUI_SUGGESTIONS = ("Открой YouTube", "Открой калькулятор", "Как дела?", "Открой блокнот", "Сколько времени?")
 
 
 def orb_notify(state):
@@ -1425,8 +1425,7 @@ def gui():
     lit_sprites = [dot(_mix(CORE, LITC, b / 5), LITC, 1 + int(b * 0.6)) for b in range(6)]
     warm_sprites = [dot(_mix(WARM, (190, 140, 95), b / 5), WARM, 1 + int(b * 0.5)) for b in range(6)]
     inner_sprites = [dot(_mix(DEEP, CORE, b / 5), DEEP, 1) for b in range(6)]
-    rim_dim = dot((70, 140, 205), (50, 110, 175), 2)
-    rim_bright = dot((200, 235, 255), (110, 190, 255), 2)
+    rim_dim = dot((55, 115, 180), (40, 95, 155), 2)
     big_glow = pygame.Surface((W, W), pygame.SRCALPHA)
     for i in range(W // 2, 0, -1):
         k = 1.0 - i / (W / 2)
@@ -1445,7 +1444,8 @@ def gui():
         pts.append({"unit": (r * math.cos(a), y, r * math.sin(a)),
                     "warm": (i % 13 == 0),
                     "ph": random.uniform(0, 6.28),
-                    "amp": random.uniform(0.006, 0.02)})
+                    "amp": random.uniform(0.006, 0.02),
+                    "base": random.uniform(0.72, 1.0)})
     inner_n = max(6, balls_n // 20)
     inner = [{"r": 0.35 + 0.42 * j / max(1, inner_n - 1),
               "speed": 1.3 + (j % 4) * 0.9,
@@ -1459,7 +1459,7 @@ def gui():
         x3 = x * cos_yaw + z2 * sin_yaw
         z3 = -x * sin_yaw + z2 * cos_yaw
         p = 1.0 / (1.0 + 0.16 * z3)
-        return (x3 * p, -y2 * p, z3)
+        return (x3 * p, -y2 * p, z3, x3, y2, z3)
 
     def persist():
         save_gui_settings({"rate": RATE, "volume": VOLUME, "city": CITY})
@@ -1638,12 +1638,17 @@ def gui():
         gw = big_glow.get_width()
         screen.blit(big_glow, (int(cx - gw / 2), int(cy - gw / 2)), special_flags=pygame.BLEND_ADD)
 
+        LX, LY, LZ = -0.62, 0.50, 0.60
+        ln = math.sqrt(LX * LX + LY * LY + LZ * LZ)
+        LX, LY, LZ = LX / ln, LY / ln, LZ / ln
+
         for i, p in enumerate(pts):
             sc = 1.0 + p["amp"] * math.sin(t * 0.8 + p["ph"])
             vx, vy, vz = p["unit"]
-            ox, oy, z = project((vx * sc, vy * sc, vz * sc), cyw, syw, ct, st)
-            depth = (z + 1) / 2
-            b = min(5, int(depth * 6))
+            ox, oy, z, nx, ny, nz = project((vx * sc, vy * sc, vz * sc), cyw, syw, ct, st)
+            lam = max(0.0, nx * LX + ny * LY + nz * LZ)
+            shade = p["base"] * (0.22 + 0.42 * (z + 1) / 2 + 0.36 * lam)
+            b = min(5, int(shade * 6))
             sx = int(cx + ox * radius * spring)
             sy = int(cy + oy * radius * spring)
             if p["warm"]:
@@ -1655,9 +1660,8 @@ def gui():
             screen.blit(spr, (sx - spr.get_width() // 2, sy - spr.get_height() // 2),
                         special_flags=pygame.BLEND_ADD)
             rho = math.hypot(ox, oy) / radius
-            if 0.85 < rho <= 1.05 and not p["warm"]:
-                rim = rim_bright if rho > 0.97 else rim_dim
-                screen.blit(rim, (sx - rim.get_width() // 2, sy - rim.get_height() // 2),
+            if 0.90 < rho <= 1.06 and not p["warm"]:
+                screen.blit(rim_dim, (sx - rim_dim.get_width() // 2, sy - rim_dim.get_height() // 2),
                             special_flags=pygame.BLEND_ADD)
 
         for j, part in enumerate(inner):
@@ -1665,7 +1669,7 @@ def gui():
             v = (part["r"] * math.cos(ang),
                  part["r"] * math.sin(ang) * part["ax"],
                  part["r"] * math.sin(ang * 0.63))
-            ox, oy, z = project(v, cyw, syw, ct, st)
+            ox, oy, z, *_r = project(v, cyw, syw, ct, st)
             depth = (z + 1) / 2
             b = min(5, int(depth * 6))
             spr = inner_sprites[b]
