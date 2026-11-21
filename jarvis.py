@@ -135,8 +135,12 @@ def instant_command(query):
     if q in ("дата", "какое сегодня число", "!дата"):
         return f"Сегодня {time.strftime('%d.%m.%Y')}, {MGMT}."
     if q in ("статус", "система", "!система"):
-        avg = os.getloadavg()[0]
-        return (f"Системы в норме, {MGMT}. Системная нагрузка — {avg:.2f}. "
+        try:
+            avg = os.getloadavg()[0]
+            load = f"Нагрузка процессора — {avg:.2f}."
+        except (AttributeError, NotImplementedError, OSError):
+            load = "Работаю в облегчённом режиме без нагрузки на процессор."
+        return (f"Системы в норме, {MGMT}. {load} "
                 "Рекомендую не перегружать этот почтенный процессор.")
     if q in ("ты кто", "кто ты", "!кто"):
         return f"Я JARVIS, ваш персональный ассистент, {MGMT}. Работаю в облегчённом режиме."
@@ -221,6 +225,12 @@ def main():
 
 
 if __name__ == "__main__":
+    if os.name == "nt" and hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+        except (OSError, ValueError):
+            pass
     try:
         main()
     except KeyboardInterrupt:

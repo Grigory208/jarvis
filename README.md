@@ -18,11 +18,25 @@
 
 ## Установка
 
+### Windows 10/11
+
+1. Установите Python с [python.org](https://www.python.org/downloads/) — при установке
+   обязательно отметьте галочку **Add python.exe to PATH**.
+2. Установите espeak-ng — скачайте MSI-установщик со страницы
+   [релизов espeak-ng](https://github.com/espeak-ng/espeak-ng/releases)
+   (файл вида `espeak-ng-x64.msi`) и просто установите.
+3. Откройте командную строку в папке проекта и запустите:
+
+```bat
+set MISTRAL_API_KEY=ваш_ключ
+python jarvis.py
+```
+
+### Linux (Ubuntu/Debian)
+
 ```bash
 sudo apt install espeak-ng python3
 ```
-
-Python и espeak-ng — всё. Никаких `pip install`.
 
 ## Запуск
 
