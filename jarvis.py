@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -65,6 +66,19 @@ MEMORY_FILE = os.environ.get(
     "JARVIS_MEMORY",
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "memory.json"))
 MEMORY_MAX = 100          # максимум фактов в постоянной памяти
+
+CITY = os.environ.get("JARVIS_CITY", "москва")   # город погоды по умолчанию
+REMINDERS = []            # активные напоминания сессии: {"text", "at"}
+
+WMO_CODE = {
+    0: "ясно", 1: "почти ясно", 2: "переменная облачность", 3: "пасмурно",
+    45: "туман", 48: "изморозь", 51: "лёгкая морось", 53: "морось", 55: "сильная морось",
+    61: "небольшой дождь", 63: "дождь", 65: "сильный дождь",
+    66: "ледяной дождь", 67: "ледяной дождь", 71: "небольшой снег", 73: "снег",
+    75: "сильный снег", 77: "снежные зёрна", 80: "ливень", 81: "ливень",
+    82: "сильный ливень", 85: "снегопад", 86: "снегопад",
+    95: "гроза", 96: "гроза с градом", 99: "гроза с градом",
+}
 
 MGMT = os.environ.get("JARVIS_ADDRESS", "сэр")
 
@@ -286,6 +300,151 @@ def handle_memory(query, engine):
     return None
 
 
+# ------------- Погода (open-meteo.com, без ключей) и напоминания -------------
+
+def fetch_weather(city=None):
+    city = (city or CITY).strip()
+    hit = None
+    for name in (city, city[:-1], city[:-2], city[:-3]):   # падежи: "лондоне" -> "лондон"
+        if len(name) < 3:
+            break
+        geo_url = ("https://geocoding-api.open-meteo.com/v1/search?name="
+                   + urllib.parse.quote(name) + "&count=1&language=ru&format=json")
+        with urllib.request.urlopen(geo_url, timeout=10) as resp:
+            hit = (json.load(resp).get("results") or [None])[0]
+        if hit:
+            break
+    if not hit:
+        return None
+    fc_url = ("https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}"
+              "&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m"
+              "&timezone=auto").format(lat=hit["latitude"], lon=hit["longitude"])
+    with urllib.request.urlopen(fc_url, timeout=10) as resp:
+        cur = json.load(resp).get("current", {})
+    return {"city": hit.get("name", city), "temp": cur.get("temperature_2m"),
+            "feels": cur.get("apparent_temperature"), "code": cur.get("weather_code"),
+            "wind": cur.get("wind_speed_10m")}
+
+
+def weather_reply(query):
+    q = query.strip().lower()
+    if not re.search(r"погод\w*|температур\w*(?!\s*(ператур)?\s*\d)|на улице\s+(тепло|холодно|жарко)", q):
+        return None
+    city = None
+    m = re.search(r"погод\w*\s+(?:сейчас\s+)?(?:в|во|на)\s+([а-яёa-z\- ]{3,30})", q)
+    if m:
+        city = m.group(1).strip()
+    try:
+        w = fetch_weather(city)
+    except (urllib.error.URLError, OSError, ValueError):
+        return f"Не достучался до погодного сервиса, {MGMT}."
+    if not w or w.get("temp") is None:
+        return f"Не нашёл город, {MGMT}."
+    desc = WMO_CODE.get(w.get("code"), "неизвестно")
+    def temp_word(value):
+        txt = str(round(value)) + "°"
+        return txt.replace("-", " минус ")
+    parts = [f"{w['city']}: {temp_word(w['temp'])}", desc]
+    if w.get("feels") is not None:
+        parts.append("ощущается как " + temp_word(w['feels']))
+    if w.get("wind") is not None:
+        parts.append(f"ветер {round(w['wind'])} м/с")
+    return ", ".join(parts) + f", {MGMT}."
+
+
+def schedule_reminder(text, delay_s, engine):
+    at = time.time() + delay_s
+    entry = {"text": text, "at": at}
+    REMINDERS.append(entry)
+    def fire():
+        if entry in REMINDERS:
+            REMINDERS.remove(entry)
+        print(f"\n[ напоминание: {text} ]")
+        speak(engine, f"Напоминаю: {text}, {MGMT}.")
+    timer = threading.Timer(delay_s, fire)
+    timer.daemon = True
+    timer.start()
+
+
+def reminder_reply(query, engine):
+    q = query.strip().lower()
+    m = re.match(r"(?:!)?напомни(?:ть)?(?:\s+мне)?\s+(.+)", q)
+    if not m:
+        if re.search(r"каки[еёйх]\s+напоминан|что\s+напоминан|напоминан\w*$", q):
+            if REMINDERS:
+                left = "; ".join(f"{r['text']} (через {int((r['at'] - time.time()) / 60) + 1} мин)"
+                                 for r in REMINDERS[:5])
+                return f"Активных напоминаний: {len(REMINDERS)}: {left}, {MGMT}."
+            return f"Активных напоминаний нет, {MGMT}."
+        return None
+    rest = m.group(1).strip()
+    delay, text = None, ""
+    m_half = re.match(r"через\s+(?:полчаса|пол\s+часа|полчасика)\s*(.*)", rest)
+    m_at = re.match(r"(?:в|во)\s+(\d{1,2})[:.](\d{2})\s*(.*)", rest)
+    m_num = re.match(r"через\s+([\dа-яё]+)\s*(секунд\w*|сек\b|минут\w*|мин\b|час\w*|ч\b)\s*(.*)", rest)
+    m_word = re.match(r"через\s+(минуту|секунду|час|часа|пять\s+минут|десять\s+минут|"
+                      r"пятнадцать\s+минут|двадцать\s+минут|тридцать\s+минут)\s*(.*)", rest)
+    if m_half:
+        delay, text = 1800, m_half.group(1).strip()
+    elif m_at:
+        hh, mm = int(m_at.group(1)), int(m_at.group(2))
+        if hh < 24 and mm < 60:
+            target = time.localtime()
+            at = time.mktime((target.tm_year, target.tm_mon, target.tm_mday, hh, mm, 0, 0, 0, -1))
+            while at <= time.time():
+                at += 86400
+            delay, text = int(at - time.time()), m_at.group(3).strip()
+    elif m_word:
+        mult = {"секунду": 1, "минуту": 60, "час": 3600, "часа": 3600,
+                "пять минут": 300, "десять минут": 600, "пятнадцать минут": 900,
+                "двадцать минут": 1200, "тридцать минут": 1800}[m_word.group(1)]
+        delay, text = mult, m_word.group(2).strip()
+    elif m_num:
+        raw, unit, text = m_num.group(1), m_num.group(2), m_num.group(3)
+        try:
+            n = int(raw)
+        except ValueError:
+            n = NUMBER_WORDS.get(raw)
+        if n is not None:
+            mult = 3600 if unit.startswith(("час", "ч")) else (60 if unit.startswith("мин") else 1)
+            delay, text = max(1, n) * mult, m_num.group(3).strip()
+    elif m_word:
+        mult = {"секунду": 1, "минуту": 60, "час": 3600, "часа": 3600,
+                "пять минут": 300, "десять минут": 600, "пятнадцать минут": 900,
+                "двадцать минут": 1200, "тридцать минут": 1800}[m_word.group(1)]
+        delay, text = mult, m_word.group(2).strip()
+    if delay is None:
+        delay, text = 3600, rest          # время не указано — напомню через час
+    text = text.strip(" .!") or "без описания"
+    human = (f"через {delay // 60} минут" if delay >= 120 and delay % 3600 else
+             f"через {delay / 60:.0f} мин" if delay > 90 else f"через {delay} сек")
+    if delay >= 3600 and delay % 3600 == 0:
+        human = f"через {delay // 3600} ч"
+    schedule_reminder(text, delay, engine)
+    return f"Хорошо: {text} — {human}, {MGMT}."
+
+
+def briefing_reply():
+    lines = [f"Сейчас {time.strftime(('%d.%m.%Y, %H:%M'))}"]
+    try:
+        w = fetch_weather()
+        if w and w.get("temp") is not None:
+            desc = WMO_CODE.get(w.get("code"), "")
+            lines.append(f"{w['city']}: {round(w['temp'])}°, {desc}")
+    except (urllib.error.URLError, OSError, ValueError):
+        pass
+    try:
+        lines.append(f"нагрузка ЦП {os.getloadavg()[0]:.2f}")
+    except (AttributeError, NotImplementedError, OSError):
+        pass
+    mem = load_memory()
+    if mem:
+        lines.append(f"в памяти {len(mem)} факт(ов)")
+    if REMINDERS:
+        lines.append(f"активных напоминаний: {len(REMINDERS)}")
+    return ", ".join(lines) + f", {MGMT}."
+
+
 def instant_command(query):
     q = query.strip().lower()
     if q in ("громче", "!громче", "louder", "громкость"):
@@ -304,6 +463,8 @@ def instant_command(query):
             return f"Громкость установлена на {VOLUME} процентов, {MGMT}."
     if q in ("громкость", "!громкость", "volume"):
         return f"Текущая громкость — {VOLUME} процентов, {MGMT}."
+    if q in ("доклад", "дай доклад", "утренний доклад", "!доклад") or "дай доклад" in q:
+        return briefing_reply()
     if q in ("время", "который час", "сколько времени", "!время") or "который час" in q:
         return f"Сейчас {time.strftime('%H:%M')}, {MGMT}."
     if (q in ("дата", "!дата") or "какое сегодня число" in q
@@ -743,6 +904,18 @@ def respond(query, history, engine):
     memory_reply = handle_memory(query, engine)
     if memory_reply:
         return memory_reply, history
+
+    remind_reply = reminder_reply(query, engine)
+    if remind_reply:
+        print("JARVIS > " + remind_reply)
+        speak(engine, remind_reply)
+        return remind_reply, history
+
+    w_reply = weather_reply(query)
+    if w_reply:
+        print("JARVIS > " + w_reply)
+        speak(engine, w_reply)
+        return w_reply, history
 
     answer = instant_command(query)
     if answer:
