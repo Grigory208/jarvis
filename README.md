@@ -7,16 +7,16 @@
 
 ## Почему это БЕСПЛАТНО
 
-Три варианта, ни один не требует подписку:
+Четыре варианта, ни один не требует подписку:
 
-1. **Бесплатный тариф Mistral** (рекомендуется). На [console.mistral.ai](https://console.mistral.ai/)
-   есть тариф **Experiment** — бесплатный API-ключ без банковской карты. Ограничения по
-   частоте запросов (около 1 запроса/сек и объём токенов в минуту), но для голосового
-   ассистента на одном компьютере этого хватает с запасом.
+1. **Ничего не настраивать** — Джарвис уже работает: у него встроено бесплатное
+   облако **Pollinations.ai** (без ключей, без регистрации, без карты). Лимит —
+   примерно один ответ в 45 секунд, модель по умолчанию `openai-fast`.
+   Просто: `python jarvis.py`
 2. **Полностью офлайн через Ollama**. Никакого интернета и никаких ключей:
    [ollama.com](https://ollama.com) + крошечная модель `qwen2.5:0.5b-instruct`
    (около 400 МБ). На старом 2-ядерном процессоре будет медленно (3-10 токенов/сек),
-   но бесплатно и безлимитно.
+   но бесплатно и безлимитно. Скрипт сам пробует Ollama перед облаком.
 3. **OpenRouter**. Бесплатные модели с суффиксом `:free`:
 
 ```bash
@@ -25,6 +25,10 @@ JARVIS_API_URL="https://openrouter.ai/api/v1/chat/completions" \
 JARVIS_MODEL="meta-llama/llama-3.1-8b-instruct:free" \
 python3 jarvis.py
 ```
+
+4. **Mistral API** — по подписке (обновление: бесплатный тариф больше не активирует
+   ключи API). Работает, если ключ уже есть. Скрипт пробует его первым только
+   когда задан `MISTRAL_API_KEY`.
 
 ## Почему это быстро
 
@@ -61,8 +65,15 @@ sudo apt install espeak-ng python3
 
 ## Запуск
 
-Получите бесплатный API-ключ на [console.mistral.ai](https://console.mistral.ai/)
-и запустите:
+Просто запустите — ключ не нужен (бесплатное облако Pollinations встроено):
+
+```bash
+python3 jarvis.py            # текстовый режим
+python3 jarvis.py voice      # голосовой режим (vosk)
+```
+
+Если появится ключ (Mistral, OpenRouter, любой OpenAI-совместимый) — задайте
+`MISTRAL_API_KEY` и скрипт будет использовать его первым:
 
 ```bash
 MISTRAL_API_KEY="ваш_ключ" python3 jarvis.py
@@ -87,6 +98,8 @@ MISTRAL_API_KEY="ваш_ключ" python3 jarvis.py
 | `JARVIS_VOSK_MODEL` | автоскачивание        | Путь к своей модели vosk                          |
 | `JARVIS_OLLAMA`   | `http://127.0.0.1:11434/api/chat` | Адрес локальной Ollama (запасной режим) |
 | `JARVIS_LOCAL_MODEL` | `qwen2.5:0.5b-instruct` | Модель Ollama, если ответ нужен даже без интернета |
+| `JARVIS_POLLINATIONS` | `https://text.pollinations.ai/openai` | Бесплатное облако без ключа (крайний фолбэк) |
+| `JARVIS_POLLINATIONS_MODEL` | `openai-fast` | Модель Pollinations |
 
 ## Запасной режим без интернета (Ollama)
 

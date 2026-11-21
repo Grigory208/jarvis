@@ -36,6 +36,9 @@ MODEL = os.environ.get("JARVIS_MODEL", "mistral-small-latest")
 OLLAMA_URL = os.environ.get("JARVIS_OLLAMA", "http://127.0.0.1:11434/api/chat")
 LOCAL_MODEL = os.environ.get("JARVIS_LOCAL_MODEL", "qwen2.5:0.5b-instruct")
 
+POLLINATIONS_URL = os.environ.get("JARVIS_POLLINATIONS", "https://text.pollinations.ai/openai")
+POLLINATIONS_MODEL = os.environ.get("JARVIS_POLLINATIONS_MODEL", "openai-fast")
+
 VOICE = os.environ.get("JARVIS_VOICE", "ru")
 VARIANT = os.environ.get("JARVIS_VARIANT", "")   # например mb-ru2, если установлен mbrola
 RATE = os.environ.get("JARVIS_RATE", "155")
@@ -97,12 +100,11 @@ def encode_json(obj):
     return json.dumps(obj, ensure_ascii=False).encode("utf-8")
 
 
-def stream_mistral(messages):
-    data = {"model": MODEL, "messages": messages, "stream": True, "max_tokens": MAX_TOKENS}
+def _stream_openai_like(url, data, headers=None):
     req = urllib.request.Request(
-        API_URL,
+        url,
         data=encode_json(data),
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {API_KEY}"},
+        headers=headers or {"Content-Type": "application/json"},
     )
     with urllib.request.urlopen(req, timeout=60) as resp:
         for raw in resp:
@@ -116,10 +118,28 @@ def stream_mistral(messages):
                 event = json.loads(payload)
             except json.JSONDecodeError:
                 continue
-            delta = event.get("choices", [{}])[0].get("delta", {})
+            choices = event.get("choices") or [{}]
+            delta = choices[0].get("delta", {}) if choices else {}
             token = delta.get("content") or ""
             if token:
                 yield token
+
+
+def stream_mistral(messages):
+    data = {"model": MODEL, "messages": messages, "stream": True, "max_tokens": MAX_TOKENS}
+    yield from _stream_openai_like(API_URL, data, {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {API_KEY}",
+    })
+
+
+def stream_pollinations(messages):
+    """Бесплатное облако без ключей и регистрации: text.pollinations.ai"""
+    data = {"model": POLLINATIONS_MODEL, "messages": messages, "stream": True}
+    yield from _stream_openai_like(POLLINATIONS_URL, data, {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer guest",
+    })
 
 
 def stream_ollama(messages):
@@ -142,7 +162,7 @@ def stream_ollama(messages):
 
 
 def stream_reply(history):
-    """Генератор токенов ответа: облако, а при отказе — локальная Ollama."""
+    """Генератор токенов ответа: ключ -> Ollama -> бесплатный Pollinations."""
     messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history
     if API_KEY:
         try:
@@ -151,8 +171,21 @@ def stream_reply(history):
         except (urllib.error.URLError, OSError) as exc:
             print(f"\n[ Mistral API недоступен: {exc}, пробую Ollama ]")
     if not API_KEY:
-        raise RuntimeError("Не задан MISTRAL_API_KEY и локальная Ollama не отвечает")
-    yield from stream_ollama(messages)
+        try:
+            yield from stream_ollama(messages)
+            return
+        except (urllib.error.URLError, OSError) as exc:
+            print(f"\n[ локальная Ollama не отвечает: {exc} ]")
+            print(f"[ переключаюсь на бесплатное облако Pollinations ({POLLINATIONS_MODEL}, без ключа) ]")
+            yield from stream_pollinations(messages)
+            return
+    try:
+        yield from stream_ollama(messages)
+    except (urllib.error.URLError, OSError) as exc:
+        raise RuntimeError(
+            f"Mistral API недоступен, а Ollama не отвечает ({exc}). "
+            f"Установите Ollama (ollama.com) и выполните: ollama pull {LOCAL_MODEL}"
+        ) from exc
 
 # ------------- Мгновенные команды, которые не тратят запросы API -------------
 
@@ -536,7 +569,8 @@ def main_text():
         print("[ предупреждение: espeak-ng не найден — ответы будут только текстом. "
               "Установите: sudo apt install espeak-ng ]")
 
-    mode = "Mistral API" if API_KEY else f"Ollama/{LOCAL_MODEL}"
+    mode = ("Mistral API" if API_KEY else
+            f"Ollama/{LOCAL_MODEL} -> Pollinations/{POLLINATIONS_MODEL}")
     print(f"=== JARVIS Lite | режим: {mode} | озвучка: {engine or 'нет'} ===")
     print(f"Готов к работе, {MGMT}. ('выход' — завершить, 'voice' — голосовой режим)\n")
 
@@ -608,7 +642,8 @@ def main_voice():
     def callback(indata, frames, time_info, status):
         audio_q.put(bytes(indata))
 
-    mode = "Mistral API" if API_KEY else f"Ollama/{LOCAL_MODEL}"
+    mode = ("Mistral API" if API_KEY else
+            f"Ollama/{LOCAL_MODEL} -> Pollinations/{POLLINATIONS_MODEL}")
     print(f"=== JARVIS Lite | голосовой режим | {mode} ===")
     print(f"Скажите: {' / '.join(WAKE_WORDS)} + команда. (Ctrl+C — выход)\n")
     speak(engine, f"Слушаю, {MGMT}.")
