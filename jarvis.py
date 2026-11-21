@@ -10,6 +10,7 @@
 """
 
 import difflib
+import ctypes
 import json
 import os
 import queue
@@ -169,7 +170,7 @@ def set_volume(value):
 
 def instant_command(query):
     q = query.strip().lower()
-    if q in ("громче", "!громче", "louder", "громкость +" ):
+    if q in ("громче", "!громче", "louder", "громкость"):
         set_volume(VOLUME + 20)
         return f"Увеличиваю громкость до {VOLUME} процентов, {MGMT}."
     if q in ("тише", "!тише", "quieter", "громкость -"):
@@ -200,6 +201,160 @@ def instant_command(query):
     if q in ("ты кто", "кто ты", "!кто"):
         return f"Я JARVIS, ваш персональный ассистент, {MGMT}. Работаю в облегчённом режиме."
     return None
+
+# --------- Системные команды из JARVIS v1 (комбинации клавиш, Windows) ---------
+
+if os.name == "nt":
+    user32 = ctypes.windll.user32
+else:
+    user32 = None
+
+VK_TAB, VK_SHIFT, VK_CONTROL, VK_MENU, VK_LWIN = 0x09, 0x10, 0x11, 0x12, 0x5B
+VK_D, VK_H, VK_J, VK_M, VK_N, VK_T, VK_W = 0x44, 0x48, 0x4A, 0x4D, 0x4E, 0x54, 0x57
+VK_F4 = 0x73
+VK_SNAPSHOT, VK_F5, VK_F11 = 0x2C, 0x74, 0x7A
+VK_VOLUME_MUTE, VK_VOLUME_DOWN, VK_VOLUME_UP = 0xAD, 0xAE, 0xAF
+VK_MEDIA_NEXT_TRACK, VK_MEDIA_PREV_TRACK, VK_MEDIA_PLAY_PAUSE = 0xB0, 0xB1, 0xB3
+KEYEVENTF_KEYUP = 0x0002
+
+
+def press_vk(vk, times=1):
+    for _ in range(times):
+        user32.keybd_event(vk, 0, 0, 0)
+        time.sleep(0.02)
+        user32.keybd_event(vk, 0, KEYEVENTF_KEYUP, 0)
+        time.sleep(0.02)
+
+
+def press_combo(*codes):
+    for vk in codes:
+        user32.keybd_event(vk, 0, 0, 0)
+        time.sleep(0.02)
+    for vk in reversed(codes):
+        user32.keybd_event(vk, 0, KEYEVENTF_KEYUP, 0)
+        time.sleep(0.02)
+
+
+def list_windows():
+    if os.name == "nt":
+        ps = "Get-Process | Where-Object {$_.MainWindowTitle -ne ''} | Select-Object -ExpandProperty MainWindowTitle"
+        result = subprocess.run(["powershell", "-NoProfile", "-Command", ps],
+                                capture_output=True, text=True, errors="ignore")
+        return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    try:
+        result = subprocess.run(["wmctrl", "-l"], capture_output=True, text=True, errors="ignore")
+        return [" ".join(line.split()[4:]) for line in result.stdout.splitlines() if line.strip()]
+    except (OSError, IndexError):
+        return []
+
+
+def open_url(url):
+    try:
+        webbrowser.open(url)
+        return True
+    except OSError:
+        return False
+
+
+def match_hotkey(t):
+    """Возвращает (вид, данные, фраза) или (None, None, None). Клавиши не жмёт."""
+    if "ютуб" in t and any(p in t for p in ("найди", "найти", "включи")):
+        q = re.sub(r".*?(?:найди|найти|включи)\s+(?:в|на)\s+ютуб[еь]?\s*", "", t).strip()
+        return ("web", "https://www.youtube.com/results?search_query=" + urllib.parse.quote(q),
+                f"Ищу на YouTube {q}, {{}}.")
+    if "ютуб муз" in t or "youtube music" in t:
+        return "web", "https://youtube.com", "Открываю YouTube Music, {}."
+    if "ютуб" in t or "youtube" in t:
+        return "web", "https://youtube.com", "Открываю YouTube, {}."
+    if " вк " in t or "вконтакт" in t:
+        return "web", "https://vk.com", "Открываю ВКонтакте, {}."
+    if ("нов" in t and "вкладк" in t) or "открой вкладк" in t:
+        return "combo", (VK_CONTROL, VK_T), "Открываю новую вкладку, {}."
+    if "закрой вкладк" in t or "закрыть вкладк" in t:
+        return "combo", (VK_CONTROL, VK_W), "Вкладка закрыта, {}."
+    if ("верн" in t or "восстанов" in t) and "вкладк" in t:
+        return "combo", (VK_CONTROL, VK_SHIFT, VK_T), "Восстанавливаю вкладку, {}."
+    if "следующ" in t and "вкладк" in t:
+        return "combo", (VK_CONTROL, VK_TAB), "Переключаю вкладку, {}."
+    if "предыдущ" in t and "вкладк" in t:
+        return "combo", (VK_CONTROL, VK_SHIFT, VK_TAB), "Предыдущая вкладка, {}."
+    if ("обнов" in t or "перезагруз" in t) and "страниц" in t:
+        return "keys", (VK_F5, 1), "Обновляю страницу, {}."
+    if "истори" in t and ("открой" in t or "браузер" in t):
+        return "combo", (VK_CONTROL, VK_H), "Открываю историю браузера, {}."
+    if "загрузк" in t and ("открой" in t or "браузер" in t):
+        return "combo", (VK_CONTROL, VK_J), "Открываю загрузки, {}."
+    if "инкогнито" in t:
+        return "combo", (VK_CONTROL, VK_SHIFT, VK_N), "Запускаю режим инкогнито, {}."
+    if "звук" in t and any(w in t for w in ("громче", "выше", "прибав")):
+        return "keys", (VK_VOLUME_UP, 5), "Увеличиваю громкость системы, {}."
+    if "звук" in t and any(w in t for w in ("тише", "ниже", "убав")):
+        return "keys", (VK_VOLUME_DOWN, 5), "Уменьшаю громкость системы, {}."
+    if ("выключи звук" in t or "включи звук" in t or "без звука" in t or "мьют" in t):
+        return "keys", (VK_VOLUME_MUTE, 1), "Переключаю режим звука, {}."
+    if any(w in t for w in ("паузу", "пауза", "продолжи", "играй", "включи музык")):
+        return "keys", (VK_MEDIA_PLAY_PAUSE, 1), "Выполнено, {}."
+    if "следующ" in t and any(w in t for w in ("трек", "песн", "видео")):
+        return "keys", (VK_MEDIA_NEXT_TRACK, 1), "Переключаю трек, {}."
+    if "предыдущ" in t and any(w in t for w in ("трек", "песн", "видео")):
+        return "keys", (VK_MEDIA_PREV_TRACK, 1), "Возвращаю предыдущий трек, {}."
+    if "сверн" in t and "все" in t:
+        return "combo", (VK_LWIN, VK_D), "Сворачиваю все окна, {}."
+    if "разверни окн" in t or "верни окн" in t:
+        return "combo", (VK_LWIN, VK_SHIFT, VK_M), "Восстанавливаю окна, {}."
+    if "закрой окно" in t or "закрой текущее" in t:
+        return "combo", (VK_MENU, VK_F4), "Окно закрыто, {}."
+    if "переключи окн" in t or "переключ окн" in t:
+        return "combo", (VK_MENU, VK_TAB), "Переключаю окно, {}."
+    if "весь экран" in t or "полный экран" in t or "фулскрин" in t:
+        return "keys", (VK_F11, 1), "Полноэкранный режим, {}."
+    if "скриншот" in t or "снимок экрана" in t:
+        return "combo", (VK_LWIN, VK_SNAPSHOT), "Скриншот экрана сохранён, {}."
+    if "заблокируй" in t:
+        return "lock", None, "Блокирую систему, {}."
+    return None, None, None
+
+
+def handle_hotkeys(query, engine):
+    """Системные команды из v1 и сайты. Возвращает ответ или None."""
+    t = " " + query.strip().lower() + " "
+
+    if any(w in t for w in ("какие программы", "что открыто", "список окон", "какие окна")):
+        windows = list_windows()
+        if windows:
+            reply = f"Сейчас открыты: {', '.join(windows[:5])}, {MGMT}."
+        else:
+            reply = f"Активных окон не обнаружено, {MGMT}."
+        print("JARVIS > " + reply)
+        speak(engine, reply)
+        return reply
+
+    kind, data, phrase = match_hotkey(t)
+    if phrase is None:
+        return None
+
+    if kind == "web":
+        reply = phrase.format(MGMT)
+        open_url(data)
+    elif user32 is None:
+        reply = f"Эта системная команда работает только в Windows, {MGMT}."
+    elif kind == "lock":
+        reply = phrase.format(MGMT)
+        speak(engine, reply)
+        print("JARVIS > " + reply)
+        time.sleep(1)
+        user32.LockWorkStation()
+        return reply
+    elif kind == "combo":
+        press_combo(*data)
+        reply = phrase.format(MGMT)
+    else:
+        press_vk(*data)
+        reply = phrase.format(MGMT)
+
+    print("JARVIS > " + reply)
+    speak(engine, reply)
+    return reply
 
 # ------------- Действия: открыть/закрыть программу, поиск -------------
 
@@ -329,8 +484,12 @@ def pop_sentences(buffer):
 
 
 def respond(query, history, engine):
-    """Один ответ на запрос: действия -> мгновенные команды -> LLM.
+    """Один ответ на запрос: хоткеи/сайты -> действия -> мгновенные команды -> LLM.
     Возвращает (текст ответа | None, обновлённая история)."""
+    hotkey_reply = handle_hotkeys(query, engine)
+    if hotkey_reply:
+        return hotkey_reply, history
+
     action_reply = handle_action(query, engine)
     if action_reply:
         return action_reply, history
