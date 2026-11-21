@@ -1366,6 +1366,32 @@ def gui():
     screen = pygame.display.set_mode((W, H))
     clock = pygame.time.Clock()
 
+    def build_bg(w, h):
+        layer = pygame.Surface((w, h))
+        top, bot = (5, 14, 16), (3, 8, 11)
+        for y in range(h):
+            k = y / max(1, h - 1)
+            col = (int(top[0] + (bot[0] - top[0]) * k),
+                   int(top[1] + (bot[1] - top[1]) * k),
+                   int(top[2] + (bot[2] - top[2]) * k))
+            pygame.draw.line(layer, col, (0, y), (w, y))
+        glow = pygame.Surface((w, h), pygame.SRCALPHA)
+        gr = int(w * 0.48)
+        gcx, gcy = w // 2, int(h * 0.40)
+        for i in range(gr, 0, -1):
+            k = (1.0 - i / gr) ** 2
+            pygame.draw.circle(glow, (int(14 * k), int(50 * k), int(48 * k), 255), (gcx, gcy), i)
+        layer.blit(glow, (0, 0), special_flags=pygame.BLEND_ADD)
+        sheen = pygame.Surface((w * 2, h * 2), pygame.SRCALPHA)
+        pygame.draw.line(sheen, (26, 56, 58, 255), (0, h * 2 - 40), (w * 2 - 60, 0), 26)
+        pygame.draw.line(sheen, (16, 36, 38, 255), (40, h * 2 - 20), (w * 2 - 20, 40), 12)
+        band = pygame.transform.rotozoom(sheen, 0, 0.5)
+        band = pygame.transform.smoothscale(band, (w, h))
+        layer.blit(band, (0, 0), special_flags=pygame.BLEND_ADD)
+        return layer
+
+    bg_layer = build_bg(W, H)
+
     hwnd = None
     try:
         hwnd = pygame.display.get_wm_info().get("window")
@@ -1384,7 +1410,6 @@ def gui():
         print("[ предупреждение: espeak-ng не найден — озвучки не будет. "
               "Автоустановка: python jarvis.py setup voice ]")
 
-    BG = (3, 7, 16)
     CORE = (120, 198, 255)
     DEEP = (26, 62, 104)
     LITC = (205, 240, 255)
@@ -1480,7 +1505,16 @@ def gui():
             out.append((r * math.cos(a), y, r * math.sin(a)))
         return out
 
+    def lines_for(f):
+        out = []
+        for i in range(len(f) - 1):
+            d2 = sum((f[i][c] - f[i + 1][c]) ** 2 for c in range(3))
+            if d2 < 0.20:
+                out.append((i, i + 1))
+        return out
+
     FORMS = [form_fib(balls_n), form_rings(balls_n), form_spiral(balls_n)]
+    FORM_LINES = [lines_for(f) for f in FORMS]
     form_a = [0]
     form_b = [1]
     form_m = [1.0]
@@ -1702,7 +1736,7 @@ def gui():
         lit_half = max(1.0, balls_n / 7.0)
         lit_center = (t * balls_n / 2.0) if thinking else 0.0
 
-        screen.fill(BG)
+        screen.blit(bg_layer, (0, 0))
         gw = big_glow.get_width()
         screen.blit(big_glow, (int(cx - gw / 2), int(cy - gw / 2)), special_flags=pygame.BLEND_ADD)
         hw = halo_layer.get_width()
@@ -1719,6 +1753,7 @@ def gui():
         ua, ub = FORMS[fa], FORMS[fb]
         scan_pos = ((now - scan_t0[0]) / scan_dur[0] * balls_n) if scan_active[0] else -99.0
 
+        proj = []
         for i, p in enumerate(pts):
             sc = 1.0 + p["amp"] * math.sin(t * 0.8 + p["ph"])
             va, vb = ua[i], ub[i]
@@ -1745,10 +1780,17 @@ def gui():
                 spr = lit_sprites[b]
             else:
                 spr = orb_sprites[b]
+            rho = math.hypot(ox, oy) / radius
+            proj.append((sx, sy, spr, rho, p["spark"], d_scan))
+
+        for ia, ibl in FORM_LINES[fb] if fm >= 0.5 else FORM_LINES[fa]:
+            pa, pb2 = proj[ia], proj[ibl]
+            pygame.draw.line(screen, (26, 78, 96), (pa[0], pa[1]), (pb2[0], pb2[1]), 1)
+
+        for sx, sy, spr, rho, spark, d_scan in proj:
             screen.blit(spr, (sx - spr.get_width() // 2, sy - spr.get_height() // 2),
                         special_flags=pygame.BLEND_ADD)
-            rho = math.hypot(ox, oy) / radius
-            if 0.94 < rho <= 1.10 and not p["spark"] and d_scan >= 4.0:
+            if 0.94 < rho <= 1.10 and not spark and d_scan >= 4.0:
                 rs = rim_soft[0] if rho <= 1.02 else rim_soft[1]
                 screen.blit(rs, (sx - rs.get_width() // 2, sy - rs.get_height() // 2),
                             special_flags=pygame.BLEND_ADD)
