@@ -2,13 +2,17 @@
 # -*- coding: utf-8 -*-
 """JARVIS Lite — сверхлёгкий голосовой ассистент в стиле J.A.R.V.I.S.
 
-Только стандартная библиотека Python: ни одного pip-пакета.
-Озвучка — espeak-ng (поддерживает русский даже на старом железе).
-Ответы — Mistral API, либо локальная Ollama в роли запасного варианта.
+Текстовый режим:   python jarvis.py
+Голосовой режим:   python jarvis.py voice   (нужны pip-пакеты vosk и sounddevice)
+
+Ядро — только стандартная библиотека Python, ни одного pip-пакета.
+Озвучка — espeak-ng. Ответы — Mistral API, либо локальная Ollama как запасной вариант.
 """
 
+import difflib
 import json
 import os
+import queue
 import re
 import shlex
 import shutil
@@ -17,7 +21,10 @@ import sys
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
+import webbrowser
+import zipfile
 
 # ------------- Настройки (переопределяются переменными окружения) -------------
 
@@ -37,6 +44,15 @@ MAX_TOKENS = int(os.environ.get("JARVIS_MAX_TOKENS", "300"))
 VOLUME = max(0, min(200, int(os.environ.get("JARVIS_VOLUME", "100"))))
 PLAYER = os.environ.get("JARVIS_PLAYER", "")     # шаблон проигрывателя: "aplay {file}" или "aplay -D {device} {file}"
 DEVICE = os.environ.get("JARVIS_DEVICE", "")     # аудиоустройство для {device} в JARVIS_PLAYER
+
+WAKE_WORDS = tuple(w.strip().lower() for w in os.environ.get(
+    "JARVIS_WAKE_WORDS",
+    "джарвис,джервис,жарвис,жар верс,ярвис").split(",") if w.strip())
+
+VOSK_MODEL_NAME = "vosk-model-small-ru-0.22"
+VOSK_MODEL_URL = f"https://alphacephei.com/vosk/models/{VOSK_MODEL_NAME}.zip"
+
+EXIT_WORDS = ("выход", "exit", "quit", "спокойной ночи", "отключись")
 
 MGMT = os.environ.get("JARVIS_ADDRESS", "сэр")
 
@@ -71,9 +87,7 @@ def speak(engine, text):
             subprocess.run(shlex.split(PLAYER.format(file=wav, device=DEVICE)), check=False)
         else:
             subprocess.run(base + [text], check=False)
-    except subprocess.CalledProcessError as exc:
-        print(f"\n[ ошибка озвучки: {exc} ]")
-    except OSError as exc:
+    except (subprocess.CalledProcessError, OSError) as exc:
         print(f"\n[ ошибка озвучки: {exc} ]")
 
 # ----------------------------- Вызов модели -----------------------------
@@ -141,6 +155,13 @@ def stream_reply(history):
 
 # ------------- Мгновенные команды, которые не тратят запросы API -------------
 
+NUMBER_WORDS = {
+    "ноль": 0, "десять": 10, "двадцать": 20, "тридцать": 30, "сорок": 40,
+    "пятьдесят": 50, "шестьдесят": 60, "семьдесят": 70, "восемьдесят": 80,
+    "девяносто": 90, "сто": 100, "полтораста": 150, "двести": 200,
+}
+
+
 def set_volume(value):
     global VOLUME
     VOLUME = max(0, min(200, int(value)))
@@ -148,17 +169,21 @@ def set_volume(value):
 
 def instant_command(query):
     q = query.strip().lower()
-    if q in ("громче", "!громче", "louder"):
+    if q in ("громче", "!громче", "louder", "громкость +" ):
         set_volume(VOLUME + 20)
         return f"Увеличиваю громкость до {VOLUME} процентов, {MGMT}."
-    if q in ("тише", "!тише", "quieter"):
+    if q in ("тише", "!тише", "quieter", "громкость -"):
         set_volume(VOLUME - 20)
         return f"Уменьшаю громкость до {VOLUME} процентов, {MGMT}."
     m = re.fullmatch(r"(?:!)?(?:громкость|volume)\s*(\d{1,3})", q)
     if m:
         set_volume(m.group(1))
         return f"Громкость установлена на {VOLUME} процентов, {MGMT}."
-    if q in ("громкость", "!громкость"):
+    for word, value in NUMBER_WORDS.items():
+        if value <= 200 and word in q and ("громкость" in q or "volume" in q):
+            set_volume(value)
+            return f"Громкость установлена на {VOLUME} процентов, {MGMT}."
+    if q in ("громкость", "!громкость", "volume"):
         return f"Текущая громкость — {VOLUME} процентов, {MGMT}."
     if q in ("время", "который час", "!время"):
         return f"Сейчас {time.strftime('%H:%M')}, {MGMT}."
@@ -176,7 +201,120 @@ def instant_command(query):
         return f"Я JARVIS, ваш персональный ассистент, {MGMT}. Работаю в облегчённом режиме."
     return None
 
-# ----------------------------- Главный цикл -----------------------------
+# ------------- Действия: открыть/закрыть программу, поиск -------------
+
+# Русская транслитерация английских названий (vosk-ru не знает латиницу)
+TRANSLIT = {
+    "стим": "steam", "стиим": "steam", "стимп": "steam",
+    "хром": "chrome", "хрум": "chrome", "кхром": "chrome", "гуглхром": "chrome",
+    "телеграм": "telegram", "телиграм": "telegram",
+    "дискорд": "discord", "дискорт": "discord",
+    "блокнот": "notepad",
+    "калькулятор": "calc", "калкулятор": "calc",
+    "диспетчер": "taskmgr",
+    "майнкрафт": "minecraft", "майнкраф": "minecraft", "майнкрафта": "minecraft",
+    "роблокс": "roblox", "роблок": "roblox",
+    "гитхаб": "github", "ютуб": "youtube", "ютюб": "youtube",
+    "браузер": "chrome", "брузер": "chrome",
+    "проводник": "explorer", "провадник": "explorer",
+    "консоль": "cmd", "командная": "cmd",
+}
+
+OPEN_PREFIXES = ("открой", "открыть", "запусти", "запустить", "open", "launch", "старт")
+CLOSE_PREFIXES = ("закрой", "закрыть", "заверши", "close", "kill")
+SEARCH_PREFIXES = ("найди", "найдети", "загугли", "поищи", "поиск", "search")
+
+
+def fix_recognition(text):
+    """Чинит русский транслит английских слов: 'открой стим' -> 'открой steam'."""
+    words = []
+    for raw in text.split():
+        w = raw.strip(",.!?")
+        if not w:
+            continue
+        if w.isascii():
+            words.append(w)
+            continue
+        if w in TRANSLIT:
+            words.append(TRANSLIT[w])
+            continue
+        best, ratio = w, 0.0
+        for key, value in TRANSLIT.items():
+            if " " in key:
+                continue
+            r = difflib.SequenceMatcher(None, w, key).ratio()
+            if r > ratio:
+                best, ratio = value, r
+        if ratio >= 0.75:
+            words.append(best)
+        else:
+            words.append(raw)
+    return " ".join(words)
+
+
+def open_app(name):
+    name = name.strip()
+    if not name:
+        return False
+    try:
+        if os.name == "nt":
+            subprocess.run(["cmd", "/c", "start", "", name], check=False)
+        elif shutil.which(name):
+            subprocess.Popen([name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            subprocess.Popen(["xdg-open", name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True
+    except OSError:
+        return False
+
+
+def close_app(name):
+    name = name.strip()
+    if not name:
+        return False
+    if os.name == "nt":
+        for suffix in ("", ".exe"):
+            result = subprocess.run(["taskkill", "/IM", name + suffix, "/F"], capture_output=True)
+            if result.returncode == 0:
+                return True
+        return False
+    return subprocess.run(["pkill", "-f", name], capture_output=True).returncode == 0
+
+
+def handle_action(query, engine):
+    """Оффлайн-действия. Возвращает ответ или None, если это не действие."""
+    t = fix_recognition(query.strip().lower())
+    for prefix in OPEN_PREFIXES:
+        if t.startswith(prefix + " "):
+            target = t[len(prefix) + 1:].strip()
+            if open_app(target):
+                reply = f"Открываю {target}, {MGMT}."
+            else:
+                reply = f"Не нашёл программу {target}, {MGMT}."
+            print("JARVIS > " + reply)
+            speak(engine, reply)
+            return reply
+    for prefix in CLOSE_PREFIXES:
+        if t.startswith(prefix + " "):
+            target = t[len(prefix) + 1:].strip()
+            if close_app(target):
+                reply = f"Закрываю {target}, {MGMT}."
+            else:
+                reply = f"Не вижу открытого окна {target}, {MGMT}."
+            print("JARVIS > " + reply)
+            speak(engine, reply)
+            return reply
+    for prefix in SEARCH_PREFIXES:
+        if t.startswith(prefix + " "):
+            target = query.strip()[len(prefix) + 1:].strip()
+            webbrowser.open("https://google.com/search?q=" + urllib.parse.quote(target))
+            reply = f"Ищу в сети {target}, {MGMT}."
+            print("JARVIS > " + reply)
+            speak(engine, reply)
+            return reply
+    return None
+
+# ----------------------------- Единый ответ -----------------------------
 
 SENTENCE_SPLIT = re.compile(r"(?<=[.!?…\n])\s+")
 
@@ -190,7 +328,50 @@ def pop_sentences(buffer):
     return [s.strip() for s in done if s.strip()], tail
 
 
-def main():
+def respond(query, history, engine):
+    """Один ответ на запрос: действия -> мгновенные команды -> LLM.
+    Возвращает (текст ответа | None, обновлённая история)."""
+    action_reply = handle_action(query, engine)
+    if action_reply:
+        return action_reply, history
+
+    answer = instant_command(query)
+    if answer:
+        print("JARVIS > " + answer)
+        speak(engine, answer)
+        return answer, history
+
+    history = history + [{"role": "user", "content": query}]
+    history = history[-12:]
+
+    full = ""
+    buffer = ""
+    try:
+        for token in stream_reply(history):
+            full += token
+            buffer += token
+            print(token, end="", flush=True)
+            sentences, buffer = pop_sentences(buffer)
+            for sentence in sentences:
+                speak(engine, sentence)
+    except (RuntimeError, urllib.error.URLError, OSError) as exc:
+        print(f"\n[ нет связи с моделью: {exc} ]")
+        return None, history[:-1]
+
+    tail = buffer.strip()
+    if tail:
+        speak(engine, tail)
+    print()
+
+    if not full.strip():
+        print("[ модель вернула пустой ответ ]")
+        return None, history[:-1]
+    history = history + [{"role": "assistant", "content": full.strip()}]
+    return full.strip(), history
+
+# ----------------------------- Текстовый режим -----------------------------
+
+def main_text():
     engine = find_tts()
     if not engine:
         print("[ предупреждение: espeak-ng не найден — ответы будут только текстом. "
@@ -198,7 +379,7 @@ def main():
 
     mode = "Mistral API" if API_KEY else f"Ollama/{LOCAL_MODEL}"
     print(f"=== JARVIS Lite | режим: {mode} | озвучка: {engine or 'нет'} ===")
-    print(f"Готов к работе, {MGMT}. ('выход' — завершить)\n")
+    print(f"Готов к работе, {MGMT}. ('выход' — завершить, 'voice' — голосовой режим)\n")
 
     history = []
 
@@ -210,49 +391,104 @@ def main():
             break
         if not query:
             continue
-        if query.lower() in ("выход", "exit", "quit"):
+        if query.lower() in EXIT_WORDS:
             speak(engine, f"Всего наилучшего, {MGMT}. Отключаюсь.")
             break
+        if query.lower() == "voice":
+            main_voice()
+            break
 
-        answer = instant_command(query)
-        if answer:
-            print("JARVIS > " + answer)
-            speak(engine, answer)
-            history.extend([
-                {"role": "user", "content": query},
-                {"role": "assistant", "content": answer},
-            ])
-            continue
+        _, history = respond(query, history, engine)
 
-        history.append({"role": "user", "content": query})
-        history = history[-12:]
+# ----------------------------- Голосовой режим -----------------------------
 
-        full = ""
-        buffer = ""
-        try:
-            for token in stream_reply(history):
-                full += token
-                buffer += token
-                print(token, end="", flush=True)
-                sentences, buffer = pop_sentences(buffer)
-                for sentence in sentences:
-                    speak(engine, sentence)
-        except (RuntimeError, urllib.error.URLError, OSError) as exc:
-            print(f"\n[ нет связи с моделью: {exc} ]")
-            history.pop()
-            continue
+def ensure_vosk_model():
+    path = os.environ.get("JARVIS_VOSK_MODEL", "")
+    if path and os.path.isdir(path):
+        return path
+    models_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
+    candidate = os.path.join(models_dir, VOSK_MODEL_NAME)
+    if os.path.isdir(candidate):
+        return candidate
+    os.makedirs(models_dir, exist_ok=True)
+    zip_path = os.path.join(models_dir, VOSK_MODEL_NAME + ".zip")
+    if not os.path.exists(zip_path):
+        print(f"[ скачиваю русскую модель vosk: {VOSK_MODEL_NAME} (~45 МБ), один раз ]")
+        urllib.request.urlretrieve(VOSK_MODEL_URL, zip_path)
+    print("[ распаковываю модель... ]")
+    with zipfile.ZipFile(zip_path) as zf:
+        zf.extractall(models_dir)
+    if not os.path.isdir(candidate):
+        raise RuntimeError(f"модель не распаковалась: {candidate}")
+    return candidate
 
-        tail = buffer.strip()
-        if tail:
-            speak(engine, tail)
-        print()
 
-        if not full.strip():
-            print("[ модель вернула пустой ответ ]")
-            history.pop()
-            continue
-        history.append({"role": "assistant", "content": full.strip()})
+def main_voice():
+    try:
+        from vosk import Model, KaldiRecognizer
+    except ImportError:
+        print("[ нет пакета vosk. Установите: pip install vosk sounddevice ]")
+        return
+    try:
+        import sounddevice as sd
+    except ImportError:
+        print("[ нет пакета sounddevice. Установите: pip install sounddevice ]")
+        return
 
+    engine = find_tts()
+    if not engine:
+        print("[ предупреждение: espeak-ng не найден — ответы будут только текстом ]")
+
+    model_path = ensure_vosk_model()
+    print("[ загружаю vosk... ]")
+    model = Model(model_path)
+    recognizer = KaldiRecognizer(model, 16000)
+
+    audio_q = queue.Queue()
+
+    def callback(indata, frames, time_info, status):
+        audio_q.put(bytes(indata))
+
+    mode = "Mistral API" if API_KEY else f"Ollama/{LOCAL_MODEL}"
+    print(f"=== JARVIS Lite | голосовой режим | {mode} ===")
+    print(f"Скажите: {' / '.join(WAKE_WORDS)} + команда. (Ctrl+C — выход)\n")
+    speak(engine, f"Слушаю, {MGMT}.")
+
+    history = []
+
+    try:
+        with sd.RawInputStream(samplerate=16000, blocksize=8000, dtype="int16",
+                               channels=1, callback=callback):
+            while True:
+                data = audio_q.get()
+                if not recognizer.AcceptWaveform(data):
+                    continue
+                text = json.loads(recognizer.Result()).get("text", "").strip().lower()
+                if not text:
+                    continue
+                print(f"[ услышал: {text} ]")
+                if not any(wake in text for wake in WAKE_WORDS):
+                    continue
+                command = ""
+                for wake in WAKE_WORDS:
+                    if wake in text:
+                        command = text.split(wake, 1)[-1].strip()
+                        break
+                if not command:
+                    speak(engine, f"Слушаю внимательно, {MGMT}.")
+                    continue
+                if command in EXIT_WORDS:
+                    speak(engine, f"Всего наилучшего, {MGMT}. Отключаюсь.")
+                    break
+                reply, history = respond(command, history, engine)
+                if reply is None:
+                    speak(engine, f"Не смог выполнить запрос, {MGMT}.")
+    except KeyboardInterrupt:
+        pass
+    finally:
+        print(f"\nJARVIS отключён, {MGMT}.")
+
+# ----------------------------- Точка входа -----------------------------
 
 if __name__ == "__main__":
     if os.name == "nt" and hasattr(sys.stdout, "reconfigure"):
@@ -262,6 +498,9 @@ if __name__ == "__main__":
         except (OSError, ValueError):
             pass
     try:
-        main()
+        if len(sys.argv) > 1 and sys.argv[1].lower() in ("voice", "-v", "голос", "голосовой"):
+            main_voice()
+        else:
+            main_text()
     except KeyboardInterrupt:
         print(f"\nJARVIS отключён, {MGMT}.")
