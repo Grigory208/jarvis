@@ -10,9 +10,11 @@
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -31,6 +33,10 @@ VARIANT = os.environ.get("JARVIS_VARIANT", "")   # например mb-ru2, ес
 RATE = os.environ.get("JARVIS_RATE", "155")
 PITCH = os.environ.get("JARVIS_PITCH", "45")
 MAX_TOKENS = int(os.environ.get("JARVIS_MAX_TOKENS", "300"))
+
+VOLUME = max(0, min(200, int(os.environ.get("JARVIS_VOLUME", "100"))))
+PLAYER = os.environ.get("JARVIS_PLAYER", "")     # шаблон проигрывателя: "aplay {file}" или "aplay -D {device} {file}"
+DEVICE = os.environ.get("JARVIS_DEVICE", "")     # аудиоустройство для {device} в JARVIS_PLAYER
 
 MGMT = os.environ.get("JARVIS_ADDRESS", "сэр")
 
@@ -57,9 +63,16 @@ def speak(engine, text):
     if not engine:
         return
     voice = VOICE + (f"+{VARIANT}" if VARIANT else "")
-    cmd = [engine, "-v", voice, "-s", RATE, "-p", PITCH, text]
+    base = [engine, "-v", voice, "-s", RATE, "-p", PITCH, "-a", str(VOLUME)]
     try:
-        subprocess.run(cmd, check=False)
+        if PLAYER:
+            wav = os.path.join(tempfile.gettempdir(), "jarvis_tts.wav")
+            subprocess.run(base + ["-w", wav, text], check=True)
+            subprocess.run(shlex.split(PLAYER.format(file=wav, device=DEVICE)), check=False)
+        else:
+            subprocess.run(base + [text], check=False)
+    except subprocess.CalledProcessError as exc:
+        print(f"\n[ ошибка озвучки: {exc} ]")
     except OSError as exc:
         print(f"\n[ ошибка озвучки: {exc} ]")
 
@@ -128,8 +141,25 @@ def stream_reply(history):
 
 # ------------- Мгновенные команды, которые не тратят запросы API -------------
 
+def set_volume(value):
+    global VOLUME
+    VOLUME = max(0, min(200, int(value)))
+
+
 def instant_command(query):
     q = query.strip().lower()
+    if q in ("громче", "!громче", "louder"):
+        set_volume(VOLUME + 20)
+        return f"Увеличиваю громкость до {VOLUME} процентов, {MGMT}."
+    if q in ("тише", "!тише", "quieter"):
+        set_volume(VOLUME - 20)
+        return f"Уменьшаю громкость до {VOLUME} процентов, {MGMT}."
+    m = re.fullmatch(r"(?:!)?(?:громкость|volume)\s*(\d{1,3})", q)
+    if m:
+        set_volume(m.group(1))
+        return f"Громкость установлена на {VOLUME} процентов, {MGMT}."
+    if q in ("громкость", "!громкость"):
+        return f"Текущая громкость — {VOLUME} процентов, {MGMT}."
     if q in ("время", "который час", "!время"):
         return f"Сейчас {time.strftime('%H:%M')}, {MGMT}."
     if q in ("дата", "какое сегодня число", "!дата"):
