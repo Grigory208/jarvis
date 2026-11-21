@@ -1425,6 +1425,8 @@ def gui():
     lit_sprites = [dot(_mix(CORE, LITC, b / 5), LITC, 1 + int(b * 0.6)) for b in range(6)]
     warm_sprites = [dot(_mix(WARM, (190, 140, 95), b / 5), WARM, 1 + int(b * 0.5)) for b in range(6)]
     inner_sprites = [dot(_mix(DEEP, CORE, b / 5), DEEP, 1) for b in range(6)]
+    rim_dim = dot((70, 140, 205), (50, 110, 175), 2)
+    rim_bright = dot((200, 235, 255), (110, 190, 255), 2)
     big_glow = pygame.Surface((W, W), pygame.SRCALPHA)
     for i in range(W // 2, 0, -1):
         k = 1.0 - i / (W / 2)
@@ -1432,8 +1434,8 @@ def gui():
                            (W // 2, W // 2), i)
 
     cx = W / 2
-    cy = ORB_H / 2 + 6
-    radius = W * 0.30
+    cy = ORB_H / 2 + 10
+    radius = W * 0.33
     golden = math.pi * (3 - 5 ** 0.5)
     pts = []
     for i in range(balls_n):
@@ -1454,7 +1456,10 @@ def gui():
         x, y, z = v
         y2 = y * cos_t - z * sin_t
         z2 = y * sin_t + z * cos_t
-        return (x * cos_yaw + z2 * sin_yaw, -y2, -x * sin_yaw + z2 * cos_yaw)
+        x3 = x * cos_yaw + z2 * sin_yaw
+        z3 = -x * sin_yaw + z2 * cos_yaw
+        p = 1.0 / (1.0 + 0.16 * z3)
+        return (x3 * p, -y2 * p, z3)
 
     def persist():
         save_gui_settings({"rate": RATE, "volume": VOLUME, "city": CITY})
@@ -1530,6 +1535,7 @@ def gui():
     chip_labels = list(GUI_SUGGESTIONS[:3])
     chip_surfs = [f_small.render("« " + t + " »", True, DIM) for t in chip_labels]
     panel_visible = [False]
+    help_visible = [False]
     top_on = [os.environ.get("JARVIS_TOPMOST", "0") == "1"]
     if top_on[0]:
         apply_topmost(True)
@@ -1560,11 +1566,18 @@ def gui():
                 mx, my = ev.pos
                 if ui.get("gear") and ui["gear"].collidepoint(mx, my):
                     panel_visible[0] = not panel_visible[0]
-                elif any(r.collidepoint(mx, my) for r in ui.get("chips", [])):
-                    for r, t in zip(ui.get("chips", []), chip_labels):
+                elif ui.get("chips") and any(r.collidepoint(mx, my) for r in ui["chips"]):
+                    for r, t in zip(ui["chips"], chip_labels):
                         if r.collidepoint(mx, my):
                             entry_focus[0] = False
                             send(t)
+                elif ui.get("help_sheet") and ui["help_sheet"].collidepoint(mx, my):
+                    help_visible[0] = False
+                    entry_focus[0] = False
+                elif ui.get("combo") and ui["combo"].collidepoint(mx, my):
+                    help_visible[0] = not help_visible[0]
+                elif ui.get("howb") and ui["howb"].collidepoint(mx, my):
+                    help_visible[0] = not help_visible[0]
                 elif panel_visible[0]:
                     hit = False
                     for i, kr in enumerate(ui.get("knobs", [])):
@@ -1641,6 +1654,11 @@ def gui():
                 spr = orb_sprites[b]
             screen.blit(spr, (sx - spr.get_width() // 2, sy - spr.get_height() // 2),
                         special_flags=pygame.BLEND_ADD)
+            rho = math.hypot(ox, oy) / radius
+            if 0.85 < rho <= 1.05 and not p["warm"]:
+                rim = rim_bright if rho > 0.97 else rim_dim
+                screen.blit(rim, (sx - rim.get_width() // 2, sy - rim.get_height() // 2),
+                            special_flags=pygame.BLEND_ADD)
 
         for j, part in enumerate(inner):
             ang = t * part["speed"] + part["phase"]
@@ -1678,11 +1696,40 @@ def gui():
         else:
             info_txt, info_col = default_hint()
         surf = f_mid.render(info_txt, True, info_col)
-        screen.blit(surf, surf.get_rect(center=(int(cx), H - 62)))
+        screen.blit(surf, surf.get_rect(center=(int(cx), H - 70)))
+        hdr = f_small.render("Попробуй сказать", True, DIM)
+        screen.blit(hdr, hdr.get_rect(center=(int(cx), H - 48)))
 
         ui["gear"] = pygame.Rect(W - 30, 8, 22, 22)
         gear_s = f_btn.render("⚙", True, FG if panel_visible[0] else DIM)
         screen.blit(gear_s, (W - 26, 8))
+
+        combo_s = f_small.render("Джарвис  ▾", True, FG)
+        cr = combo_s.get_rect(topleft=(14, 12))
+        box = cr.inflate(18, 10)
+        pygame.draw.rect(screen, (10, 28, 46), box, border_radius=5)
+        pygame.draw.rect(screen, (30, 70, 105), box, 1, border_radius=5)
+        screen.blit(combo_s, cr)
+        ui["combo"] = box
+        how_s = f_small.render("Как начать", True, FG)
+        hr = how_s.get_rect(topleft=(box.right + 10, 17))
+        hbox = hr.inflate(16, 10)
+        pygame.draw.rect(screen, (10, 28, 46), hbox, border_radius=5)
+        pygame.draw.rect(screen, (30, 70, 105), hbox, 1, border_radius=5)
+        screen.blit(how_s, hr)
+        ui["howb"] = hbox
+
+        if help_visible[0]:
+            hs = pygame.Surface((W - 60, 86), pygame.SRCALPHA)
+            hs.fill((8, 20, 34, 224))
+            screen.blit(hs, (30, 40))
+            ui["help_sheet"] = pygame.Rect(30, 40, W - 60, 86)
+            for li, ltxt in enumerate((
+                    "1. жми 🎤 (в ⚙) и говори: «джарвис, + команда»",
+                    "2. или кликай фразы внизу — выполняется сразу",
+                    "3. ⚙ — скорость, громкость, город, поверх всех")):
+                lf = f_small.render(ltxt, True, FG)
+                screen.blit(lf, (42, 52 + li * 22))
 
         if panel_visible[0]:
             sheet = pygame.Surface((W - 16, 148), pygame.SRCALPHA)
