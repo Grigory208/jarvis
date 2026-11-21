@@ -51,7 +51,7 @@ DEVICE = os.environ.get("JARVIS_DEVICE", "")     # аудиоустройств�
 
 WAKE_WORDS = tuple(w.strip().lower() for w in os.environ.get(
     "JARVIS_WAKE_WORDS",
-    "джарвис,джервис,жарвис,жар верс,ярвис").split(",") if w.strip())
+    "джарвис,джервис,жарвис,жар верс,ярвис,джерри,джери,джарис").split(",") if w.strip())
 
 VOSK_MODEL_NAME = "vosk-model-small-ru-0.22"
 VOSK_MODEL_URL = f"https://alphacephei.com/vosk/models/{VOSK_MODEL_NAME}.zip"
@@ -219,9 +219,10 @@ def instant_command(query):
             return f"Громкость установлена на {VOLUME} процентов, {MGMT}."
     if q in ("громкость", "!громкость", "volume"):
         return f"Текущая громкость — {VOLUME} процентов, {MGMT}."
-    if q in ("время", "который час", "!время"):
+    if q in ("время", "который час", "сколько времени", "!время") or "который час" in q:
         return f"Сейчас {time.strftime('%H:%M')}, {MGMT}."
-    if q in ("дата", "какое сегодня число", "!дата"):
+    if (q in ("дата", "!дата") or "какое сегодня число" in q
+            or "какой день" in q or "какое число" in q or "какая дата" in q):
         return f"Сегодня {time.strftime('%d.%m.%Y')}, {MGMT}."
     if q in ("статус", "система", "!система"):
         try:
@@ -352,7 +353,11 @@ def handle_hotkeys(query, engine):
     """Системные команды из v1 и сайты. Возвращает ответ или None."""
     t = " " + query.strip().lower() + " "
 
-    if any(w in t for w in ("какие программы", "что открыто", "список окон", "какие окна")):
+    windows_rx = re.compile(
+        r"список\s+окон|что\s+открыт\w*"
+        r"|каки[еёйх]\w*\s+(?:сейчас\s+)?(?:программ\w*|окн\w*)"
+        r"|(?:программ\w*|окн\w*)\s+(?:сейчас\s+)?откр\w*")
+    if windows_rx.search(t):
         windows = list_windows()
         if windows:
             reply = f"Сейчас открыты: {', '.join(windows[:5])}, {MGMT}."
