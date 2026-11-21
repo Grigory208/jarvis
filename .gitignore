@@ -2,3 +2,4 @@ __pycache__/
 models/
 *.zip
 memory.json
+gui_settings.json

@@ -12,8 +12,10 @@
 import difflib
 import ctypes
 import json
+import math
 import os
 import queue
+import random
 import re
 import shlex
 import shutil
@@ -161,6 +163,7 @@ def resolve_voice(engine):
 def speak(engine, text):
     if not engine:
         return
+    orb_notify("speak")
     voice = resolve_voice(engine)
     base = [engine, "-v", voice, "-s", RATE, "-p", PITCH, "-a", str(VOLUME)]
     tmp = None
@@ -181,6 +184,7 @@ def speak(engine, text):
     except (subprocess.CalledProcessError, OSError) as exc:
         print(f"\n[ ошибка озвучки: {exc} ]")
     finally:
+        orb_notify("idle")
         if tmp:
             try:
                 os.remove(tmp)
@@ -1085,6 +1089,7 @@ def respond(query, history, engine):
 
     full = ""
     buffer = ""
+    orb_notify("think")
     try:
         for token in stream_reply(history):
             full += token
@@ -1093,14 +1098,17 @@ def respond(query, history, engine):
             sentences, buffer = pop_sentences(buffer)
             for sentence in sentences:
                 speak(engine, sentence)
+            orb_notify("think")
     except (RuntimeError, urllib.error.URLError, OSError) as exc:
         print(f"\n[ нет связи с моделью: {exc} ]")
+        orb_notify("idle")
         return None, history[:-1]
 
     tail = buffer.strip()
     if tail:
         speak(engine, tail)
     print()
+    orb_notify("idle")
 
     if not full.strip():
         print("[ модель вернула пустой ответ ]")
@@ -1211,7 +1219,7 @@ def main_voice():
     try:
         with sd.RawInputStream(samplerate=16000, blocksize=8000, dtype="int16",
                                channels=1, callback=callback):
-            while True:
+            while not VOICE_STOP:
                 data = audio_q.get()
                 if not recognizer.AcceptWaveform(data):
                     continue
@@ -1279,6 +1287,257 @@ def doctor():
     print(f"город погоды: {CITY}; голос: {VOICE}; громкость: {VOLUME}")
 
 
+# ----------------------------- GUI: шар-ядро -----------------------------
+
+GUI_BG = "#060b14"
+GUI_BG_RGB = (6, 11, 20)
+GUI_FG = "#9fd8ff"
+GUI_FG_DIM = "#3a6a8f"
+ORB_DEEP = (14, 58, 108)
+ORB_NEAR = (90, 198, 255)
+ORB_LIT = (185, 232, 255)
+ORB_STATE = "idle"
+VOICE_STOP = False
+GUI_SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gui_settings.json")
+
+
+def orb_notify(state):
+    global ORB_STATE
+    ORB_STATE = state
+
+
+def load_gui_settings():
+    try:
+        with open(GUI_SETTINGS_FILE, encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_gui_settings(data):
+    try:
+        with open(GUI_SETTINGS_FILE, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, ensure_ascii=False, indent=1)
+    except OSError:
+        pass
+
+
+def _rgb(col):
+    return "#%02x%02x%02x" % col
+
+
+def _mix(c1, c2, k):
+    return tuple(int(a + (b - a) * k) for a, b in zip(c1, c2))
+
+
+def gui():
+    """Окно с вращающимся ядром из «токенов» и панелью настроек (tkinter, без зависимостей)."""
+    global RATE, VOLUME, CITY, VOICE_STOP
+    try:
+        import tkinter as tk
+    except (ImportError, OSError) as exc:
+        print(f"[ GUI недоступно: {exc} — работает текстовый режим ]")
+        main_text()
+        return
+
+    balls_n = max(30, min(240, int(os.environ.get("JARVIS_ORB_BALLS", "110"))))
+    win_size = max(260, int(os.environ.get("JARVIS_ORB_SIZE", "420")))
+
+    saved = load_gui_settings()
+    if "rate" in saved:
+        RATE = str(saved["rate"])
+        os.environ["JARVIS_RATE"] = RATE
+    if "volume" in saved:
+        VOLUME = max(0, min(200, int(saved["volume"])))
+        os.environ["JARVIS_VOLUME"] = str(VOLUME)
+    if saved.get("city"):
+        CITY = str(saved["city"])
+        os.environ["JARVIS_CITY"] = CITY
+
+    root = tk.Tk()
+    root.title("JARVIS")
+    root.configure(bg=GUI_BG)
+    root.resizable(False, False)
+
+    canvas = tk.Canvas(root, width=win_size, height=win_size, bg=GUI_BG, highlightthickness=0)
+    canvas.pack(fill="x")
+
+    status = tk.Label(root, text="ОЖИДАНИЕ", bg=GUI_BG, fg=GUI_FG_DIM, font=("Consolas", 11, "bold"))
+    status.pack(pady=(0, 4))
+
+    panel = tk.Frame(root, bg=GUI_BG)
+    rate_var = tk.IntVar(value=int(RATE))
+    vol_var = tk.IntVar(value=VOLUME)
+    city_var = tk.StringVar(value=CITY)
+
+    def changed(*_):
+        global RATE, VOLUME, CITY
+        RATE = str(rate_var.get())
+        os.environ["JARVIS_RATE"] = RATE
+        VOLUME = max(0, min(200, vol_var.get()))
+        os.environ["JARVIS_VOLUME"] = str(VOLUME)
+        CITY = city_var.get().strip() or "москва"
+        os.environ["JARVIS_CITY"] = CITY
+        save_gui_settings({"rate": RATE, "volume": VOLUME, "city": CITY})
+
+    def _line(text):
+        tk.Label(panel, text=text, bg=GUI_BG, fg=GUI_FG, font=("Consolas", 9)).pack(anchor="w", padx=6)
+
+    _line("скорость речи (words/min)")
+    tk.Scale(panel, from_=20, to=200, orient="horizontal", variable=rate_var, command=changed,
+             bg=GUI_BG, fg=GUI_FG, highlightthickness=0, troughcolor="#0d2033", length=280).pack(padx=8)
+    _line("громкость озвучки (0-200)")
+    tk.Scale(panel, from_=0, to=200, orient="horizontal", variable=vol_var, command=changed,
+             bg=GUI_BG, fg=GUI_FG, highlightthickness=0, troughcolor="#0d2033", length=280).pack(padx=8)
+    _line("город погоды")
+    tk.Entry(panel, textvariable=city_var, bg="#0d2033", fg=GUI_FG, insertbackground=GUI_FG,
+             relief="flat", width=22).pack(anchor="w", padx=8, pady=(0, 2))
+
+    voice_active = [False]
+    voice_btn = None
+
+    def run_voice():
+        global VOICE_STOP
+        if voice_active[0]:
+            VOICE_STOP = True
+            voice_btn.config(text="🎤 останавливаю…")
+            return
+        VOICE_STOP = False
+        voice_active[0] = True
+        orb_notify("listen")
+        voice_btn.config(text="🎤 голос: вкл — выключить")
+
+        def worker():
+            try:
+                main_voice()
+            finally:
+                orb_notify("idle")
+                voice_active[0] = False
+                root.after(0, lambda: voice_btn.config(text="🎤 голос"))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    voice_btn = tk.Button(panel, text="🎤 голос", command=run_voice, bg="#0d2033", fg=GUI_FG,
+                          activebackground="#123a5c", activeforeground=GUI_FG, relief="flat",
+                          font=("Consolas", 10), width=14)
+    voice_btn.pack(side="left", padx=(6, 3), pady=6)
+    tk.Button(panel, text="doctor", command=lambda: threading.Thread(target=doctor, daemon=True).start(),
+              bg="#0d2033", fg=GUI_FG, activebackground="#123a5c", activeforeground=GUI_FG,
+              relief="flat", font=("Consolas", 10), width=8).pack(side="left", padx=3, pady=6)
+
+    def toggle_panel():
+        if panel.winfo_ismapped():
+            panel.pack_forget()
+        else:
+            panel.pack(fill="x", padx=10, pady=(0, 8))
+
+    tk.Button(root, text="⚙", command=toggle_panel, bg=GUI_BG, fg=GUI_FG_DIM,
+              activebackground=GUI_BG, activeforeground=GUI_FG, relief="flat",
+              font=("Consolas", 12)).place(relx=1.0, x=-6, y=4, anchor="ne")
+
+    def on_close():
+        global VOICE_STOP
+        VOICE_STOP = True
+        root.destroy()
+
+    root.protocol("WM_DELETE_WINDOW", on_close)
+
+    cx = cy = win_size / 2.0
+    radius = win_size * 0.36
+    golden = math.pi * (3 - 5 ** 0.5)
+    pts = []
+    for i in range(balls_n):
+        y = 1 - 2 * (i + 0.5) / balls_n
+        r = math.sqrt(max(0.0, 1 - y * y))
+        a = i * golden
+        pts.append((r * math.cos(a), y, r * math.sin(a)))
+    inner_n = max(4, balls_n // 12)
+    inner = [{"r": 0.35 + 0.4 * j / max(1, inner_n - 1),
+              "speed": 1.4 + (j % 3) * 1.1,
+              "phase": j * 1.7,
+              "ax": 0.5 + 0.25 * ((j * 7) % 3)}
+             for j in range(inner_n)]
+
+    ids = [canvas.create_oval(-1, -1, -1, -1, fill="", outline="") for _ in pts]
+    inner_ids = [canvas.create_oval(-1, -1, -1, -1, fill="", outline="") for _ in inner]
+    last_col = [None] * (balls_n + inner_n)
+
+    def project(v, cos_yaw, sin_yaw, cos_t, sin_t):
+        x, y, z = v
+        y2 = y * cos_t - z * sin_t
+        z2 = y * sin_t + z * cos_t
+        return (x * cos_yaw + z2 * sin_yaw, -y2, -x * sin_yaw + z2 * cos_yaw)
+
+    t0 = time.perf_counter()
+    next_twitch = [t0 + random.uniform(2, 6)]
+    twitch_t0 = [-10.0]
+
+    def tick():
+        now = time.perf_counter()
+        t = now - t0
+        if now > next_twitch[0]:
+            next_twitch[0] = now + random.uniform(4, 9)
+            twitch_t0[0] = now
+        dt = now - twitch_t0[0]
+        spring = 1.0 + 0.085 * math.exp(-2.5 * dt) * math.cos(15 * dt)
+        if ORB_STATE in ("speak", "think"):
+            spring *= 1.0 + 0.03 * math.sin(t * 7)
+        tilt = 0.42 + 0.07 * math.sin(t * 0.25)
+        ct, st = math.cos(tilt), math.sin(tilt)
+        yaw = t * 0.45
+        cyw, syw = math.cos(yaw), math.sin(yaw)
+
+        thinking = ORB_STATE == "think"
+        lit_half = max(1.0, balls_n / 6.0)
+        lit_center = (t * balls_n / 2.0) if thinking else 0.0
+
+        for i, v in enumerate(pts):
+            ox, oy, z = project(v, cyw, syw, ct, st)
+            depth = (z + 1) / 2
+            size = (1.7 + 4.3 * depth) * spring
+            sx = cx + ox * radius * spring
+            sy = cy + oy * radius * spring
+            col = _mix(ORB_DEEP, ORB_NEAR, depth)
+            if thinking:
+                d = min(abs(i - lit_center), balls_n - abs(i - lit_center))
+                k = 0.75 * max(0.0, 1.0 - d / lit_half)
+                if k > 0:
+                    col = _mix(col, ORB_LIT, k)
+            canvas.coords(ids[i], sx - size, sy - size, sx + size, sy + size)
+            if last_col[i] != col:
+                canvas.itemconfig(ids[i], fill=_rgb(col), outline="")
+                last_col[i] = col
+
+        for j, part in enumerate(inner):
+            ang = t * part["speed"] + part["phase"]
+            v = (part["r"] * math.cos(ang),
+                 part["r"] * math.sin(ang) * part["ax"],
+                 part["r"] * math.sin(ang * 0.63))
+            ox, oy, z = project(v, cyw, syw, ct, st)
+            depth = (z + 1) / 2
+            size = (1.2 + 2.2 * depth) * spring
+            sx = cx + ox * radius * spring
+            sy = cy + oy * radius * spring
+            col = _mix(_mix(ORB_DEEP, ORB_NEAR, depth), GUI_BG_RGB, 0.35)
+            n2 = balls_n + j
+            canvas.coords(inner_ids[j], sx - size, sy - size, sx + size, sy + size)
+            if last_col[n2] != col:
+                canvas.itemconfig(inner_ids[j], fill=_rgb(col), outline="")
+                last_col[n2] = col
+
+        want = {"idle": ("СЛУШАЮ" if voice_active[0] else "ОЖИДАНИЕ", GUI_FG_DIM),
+                "listen": ("СЛУШАЮ", GUI_FG_DIM),
+                "think": ("ОБРАБАТЫВАЮ…", GUI_FG),
+                "speak": ("ГОВОРЮ", GUI_FG)}.get(ORB_STATE, ("ОЖИДАНИЕ", GUI_FG_DIM))
+        if status.cget("text") != want[0]:
+            status.config(text=want[0], fg=want[1])
+        root.after(33, tick)
+
+    tick()
+    root.mainloop()
+
+
 # ----------------------------- Точка входа -----------------------------
 
 if __name__ == "__main__":
@@ -1296,6 +1555,8 @@ if __name__ == "__main__":
                 setup_engine()
         elif len(sys.argv) > 1 and sys.argv[1].lower() in ("doctor", "diag", "доктор"):
             doctor()
+        elif len(sys.argv) > 1 and sys.argv[1].lower() in ("gui", "шар", "окно"):
+            gui()
         elif len(sys.argv) > 1 and sys.argv[1].lower() in ("voice", "-v", "голос", "голосовой"):
             main_voice()
         else:
