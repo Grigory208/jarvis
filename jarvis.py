@@ -1356,7 +1356,7 @@ def gui():
             gui_tk()
             return
 
-    balls_n = max(120, min(420, int(os.environ.get("JARVIS_ORB_BALLS", "260"))))
+    balls_n = max(120, min(700, int(os.environ.get("JARVIS_ORB_BALLS", "400"))))
     W = max(340, int(os.environ.get("JARVIS_ORB_SIZE", "460")))
     ORB_H = int(W * 0.72)
     H = ORB_H + 108
@@ -1417,20 +1417,29 @@ def gui():
             col = tuple(int(v * k) for v in glow_col)
             pygame.draw.circle(surf, col + (255,), (c, c), i)
         pygame.draw.circle(surf, core_col + (255,), (c, c), r)
-        hi = (min(255, core_col[0] + 80), min(255, core_col[1] + 55), 255)
+        hi = (min(255, core_col[0] + 90), min(255, core_col[1] + 80), min(255, core_col[2] + 70))
         pygame.draw.circle(surf, hi + (255,), (c, c), max(1, r - 1))
         return surf
 
-    orb_sprites = [dot(_mix(DEEP, CORE, b / 5), _mix(DEEP, CORE, b / 5), 1 + int(b * 0.6)) for b in range(6)]
-    lit_sprites = [dot(_mix(CORE, LITC, b / 5), LITC, 1 + int(b * 0.6)) for b in range(6)]
-    warm_sprites = [dot(_mix(WARM, (190, 140, 95), b / 5), WARM, 1 + int(b * 0.5)) for b in range(6)]
+    NB = 12
+    orb_sprites = [dot(_mix(DEEP, CORE, b / (NB - 1)), _mix(DEEP, CORE, b / (NB - 1)), 1) for b in range(NB)]
+    lit_sprites = [dot(_mix(CORE, LITC, b / (NB - 1)), LITC, 1) for b in range(NB)]
+    warm_sprites = [dot(_mix(WARM, (235, 175, 115), b / (NB - 1)), WARM, 2) for b in range(NB)]
     inner_sprites = [dot(_mix(DEEP, CORE, b / 5), DEEP, 1) for b in range(6)]
-    rim_dim = dot((55, 115, 180), (40, 95, 155), 2)
+    rim_soft = [dot((70, 130, 195), (52, 108, 168), 2), dot((55, 115, 180), (40, 95, 155), 1)]
+    core_halo = dot((238, 250, 255), CORE, 14)
+    core_haze = dot((150, 210, 255), (55, 115, 185), 34)
+    halo_layer = pygame.Surface((W, W), pygame.SRCALPHA)
+    c0 = W // 2
+    for i in range(c0, 0, -1):
+        k = 1.0 - i / c0
+        pygame.draw.circle(halo_layer, (int(26 * k ** 2.2), int(62 * k ** 2.2), int(106 * k ** 2.2), 255),
+                           (c0, c0), i)
     big_glow = pygame.Surface((W, W), pygame.SRCALPHA)
-    for i in range(W // 2, 0, -1):
-        k = 1.0 - i / (W / 2)
-        pygame.draw.circle(big_glow, (int(DEEP[0] * k ** 2), int(DEEP[1] * k ** 2), int(DEEP[2] * k ** 2), 255),
-                           (W // 2, W // 2), i)
+    for i in range(c0, 0, -1):
+        k = 1.0 - i / c0
+        pygame.draw.circle(big_glow, (int(30 * k ** 1.7), int(72 * k ** 1.7), int(120 * k ** 1.7), 255),
+                           (c0, c0), i)
 
     cx = W / 2
     cy = ORB_H / 2 + 10
@@ -1442,7 +1451,7 @@ def gui():
         r = math.sqrt(max(0.0, 1 - y * y))
         a = i * golden
         pts.append({"unit": (r * math.cos(a), y, r * math.sin(a)),
-                    "warm": (i % 13 == 0),
+                    "warm": (i % 9 == 0),
                     "ph": random.uniform(0, 6.28),
                     "amp": random.uniform(0.006, 0.02),
                     "base": random.uniform(0.72, 1.0)})
@@ -1637,6 +1646,10 @@ def gui():
         screen.fill(BG)
         gw = big_glow.get_width()
         screen.blit(big_glow, (int(cx - gw / 2), int(cy - gw / 2)), special_flags=pygame.BLEND_ADD)
+        hw = halo_layer.get_width()
+        screen.blit(halo_layer, (int(cx - hw / 2), int(cy - hw / 2)), special_flags=pygame.BLEND_ADD)
+        hc = core_haze.get_width()
+        screen.blit(core_haze, (int(cx - hc / 2), int(cy - hc / 2)), special_flags=pygame.BLEND_ADD)
 
         LX, LY, LZ = -0.62, 0.50, 0.60
         ln = math.sqrt(LX * LX + LY * LY + LZ * LZ)
@@ -1648,7 +1661,7 @@ def gui():
             ox, oy, z, nx, ny, nz = project((vx * sc, vy * sc, vz * sc), cyw, syw, ct, st)
             lam = max(0.0, nx * LX + ny * LY + nz * LZ)
             shade = p["base"] * (0.22 + 0.42 * (z + 1) / 2 + 0.36 * lam)
-            b = min(5, int(shade * 6))
+            b = min(NB - 1, int(shade * NB))
             sx = int(cx + ox * radius * spring)
             sy = int(cy + oy * radius * spring)
             if p["warm"]:
@@ -1660,8 +1673,9 @@ def gui():
             screen.blit(spr, (sx - spr.get_width() // 2, sy - spr.get_height() // 2),
                         special_flags=pygame.BLEND_ADD)
             rho = math.hypot(ox, oy) / radius
-            if 0.90 < rho <= 1.06 and not p["warm"]:
-                screen.blit(rim_dim, (sx - rim_dim.get_width() // 2, sy - rim_dim.get_height() // 2),
+            if 0.94 < rho <= 1.10 and not p["warm"]:
+                rs = rim_soft[0] if rho <= 1.02 else rim_soft[1]
+                screen.blit(rs, (sx - rs.get_width() // 2, sy - rs.get_height() // 2),
                             special_flags=pygame.BLEND_ADD)
 
         for j, part in enumerate(inner):
@@ -1677,6 +1691,9 @@ def gui():
             sy = int(cy + oy * radius * spring)
             screen.blit(spr, (sx - spr.get_width() // 2, sy - spr.get_height() // 2),
                         special_flags=pygame.BLEND_ADD)
+
+        cw = core_halo.get_width()
+        screen.blit(core_halo, (int(cx - cw / 2), int(cy - cw / 2)), special_flags=pygame.BLEND_ADD)
 
         chips_x = cx - sum(s.get_width() for s in chip_surfs) / 2 - 10 * (len(chip_surfs) - 1) / 2
         chips_y = H - 26
