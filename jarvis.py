@@ -163,15 +163,29 @@ def speak(engine, text):
         return
     voice = resolve_voice(engine)
     base = [engine, "-v", voice, "-s", RATE, "-p", PITCH, "-a", str(VOLUME)]
+    tmp = None
     try:
         if PLAYER:
             wav = os.path.join(tempfile.gettempdir(), "jarvis_tts.wav")
-            subprocess.run(base + ["-w", wav, text], check=True)
+            # на Windows argv ломает кириллицу (ANSI) — текст идёт через UTF-8 файл
+            fd, tmp = tempfile.mkstemp(suffix=".txt")
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(text)
+            subprocess.run(base + ["-f", tmp, "-w", wav], check=True)
             subprocess.run(shlex.split(PLAYER.format(file=wav, device=DEVICE)), check=False)
         else:
-            subprocess.run(base + [text], check=False)
+            fd, tmp = tempfile.mkstemp(suffix=".txt")
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(text)
+            subprocess.run(base + ["-f", tmp], check=False)
     except (subprocess.CalledProcessError, OSError) as exc:
         print(f"\n[ ошибка озвучки: {exc} ]")
+    finally:
+        if tmp:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
 
 # ----------------------------- Вызов модели -----------------------------
 
