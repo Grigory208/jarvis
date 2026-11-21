@@ -1384,11 +1384,10 @@ def gui():
         print("[ предупреждение: espeak-ng не найден — озвучки не будет. "
               "Автоустановка: python jarvis.py setup voice ]")
 
-    BG = (4, 9, 18)
+    BG = (3, 7, 16)
     CORE = (120, 198, 255)
     DEEP = (26, 62, 104)
     LITC = (205, 240, 255)
-    WARM = (165, 116, 76)
     FG = (150, 210, 255)
     DIM = (70, 115, 150)
     ERR = (255, 130, 120)
@@ -1424,7 +1423,8 @@ def gui():
     NB = 12
     orb_sprites = [dot(_mix(DEEP, CORE, b / (NB - 1)), _mix(DEEP, CORE, b / (NB - 1)), 1) for b in range(NB)]
     lit_sprites = [dot(_mix(CORE, LITC, b / (NB - 1)), LITC, 1) for b in range(NB)]
-    warm_sprites = [dot(_mix(WARM, (235, 175, 115), b / (NB - 1)), WARM, 2) for b in range(NB)]
+    spark_sprites = [dot((242, 251, 255), (170, 225, 255), 1) for b in range(NB)]
+    scan_sprites = [dot((255, 255, 255), (150, 220, 255), 2), dot((210, 240, 255), LITC, 1)]
     inner_sprites = [dot(_mix(DEEP, CORE, b / 5), DEEP, 1) for b in range(6)]
     rim_soft = [dot((70, 130, 195), (52, 108, 168), 2), dot((55, 115, 180), (40, 95, 155), 1)]
     core_halo = dot((238, 250, 255), CORE, 14)
@@ -1444,14 +1444,55 @@ def gui():
     cx = W / 2
     cy = ORB_H / 2 + 10
     radius = W * 0.33
-    golden = math.pi * (3 - 5 ** 0.5)
+
+    def form_fib(n):
+        g = math.pi * (3 - 5 ** 0.5)
+        out = []
+        for i in range(n):
+            y = 1 - 2 * (i + 0.5) / n
+            r = math.sqrt(max(0.0, 1 - y * y))
+            a = i * g
+            out.append((r * math.cos(a), y, r * math.sin(a)))
+        return out
+
+    def form_rings(n):
+        raw = []
+        rows = max(6, n // 14)
+        for j in range(rows):
+            y = 1 - 2 * (j + 0.5) / rows
+            r = math.sqrt(max(0.0, 1 - y * y))
+            per = max(6, int(15 * r) + 3)
+            for k in range(per):
+                a = 2 * math.pi * k / per + j * 0.25
+                raw.append((r * math.cos(a), y, r * math.sin(a)))
+        while len(raw) < n:
+            raw.append(raw[len(raw) % max(1, len(raw))])
+        return raw[:n]
+
+    def form_spiral(n):
+        out = []
+        turns = 5
+        for i in range(n):
+            s = i / max(1, n - 1)
+            y = 1 - 2 * s
+            r = math.sqrt(max(0.0, 1 - y * y))
+            a = s * turns * 2 * math.pi
+            out.append((r * math.cos(a), y, r * math.sin(a)))
+        return out
+
+    FORMS = [form_fib(balls_n), form_rings(balls_n), form_spiral(balls_n)]
+    form_a = [0]
+    form_b = [1]
+    form_m = [1.0]
+    _tnow = time.perf_counter()
+    next_form = [_tnow + 10.0]
+    next_scan = [_tnow + random.uniform(3, 6)]
+    scan_t0 = [-10.0]
+    scan_dur = [2.0]
     pts = []
     for i in range(balls_n):
-        y = 1 - 2 * (i + 0.5) / balls_n
-        r = math.sqrt(max(0.0, 1 - y * y))
-        a = i * golden
-        pts.append({"unit": (r * math.cos(a), y, r * math.sin(a)),
-                    "warm": (i % 9 == 0),
+        pts.append({"unit": FORMS[0][i],
+                    "spark": (i % 9 == 0),
                     "ph": random.uniform(0, 6.28),
                     "amp": random.uniform(0.006, 0.02),
                     "base": random.uniform(0.72, 1.0)})
@@ -1555,6 +1596,8 @@ def gui():
     t0 = time.perf_counter()
     next_twitch = [t0 + random.uniform(2, 6)]
     twitch_t0 = [-10.0]
+    last_now = [-10.0]
+    scan_active = [False]
 
     running = True
     while running:
@@ -1627,6 +1670,22 @@ def gui():
 
         now = time.perf_counter()
         t = now - t0
+        frame_dt = min(0.1, max(0.001, now - last_now[0]))
+        last_now[0] = now
+        if now > next_form[0]:
+            form_a[0] = form_b[0]
+            form_b[0] = (form_b[0] + random.randint(1, len(FORMS) - 1)) % len(FORMS)
+            form_m[0] = 0.0
+            next_form[0] = now + random.uniform(9, 15)
+        if form_m[0] < 1.0:
+            form_m[0] = min(1.0, form_m[0] + frame_dt / 1.6)
+        if scan_active[0] and (now - scan_t0[0]) / scan_dur[0] >= 1.0:
+            scan_active[0] = False
+        elif not scan_active[0] and now > next_scan[0] and ORB_STATE != "think":
+            scan_active[0] = True
+            scan_t0[0] = now
+            scan_dur[0] = random.uniform(1.4, 2.2)
+            next_scan[0] = now + scan_dur[0] + random.uniform(5, 10)
         if now > next_twitch[0]:
             next_twitch[0] = now + random.uniform(4, 9)
             twitch_t0[0] = now
@@ -1655,17 +1714,33 @@ def gui():
         ln = math.sqrt(LX * LX + LY * LY + LZ * LZ)
         LX, LY, LZ = LX / ln, LY / ln, LZ / ln
 
+        fa, fb, fm = form_a[0], form_b[0], form_m[0]
+        mk = fm * fm * (3.0 - 2.0 * fm)
+        ua, ub = FORMS[fa], FORMS[fb]
+        scan_pos = ((now - scan_t0[0]) / scan_dur[0] * balls_n) if scan_active[0] else -99.0
+
         for i, p in enumerate(pts):
             sc = 1.0 + p["amp"] * math.sin(t * 0.8 + p["ph"])
-            vx, vy, vz = p["unit"]
+            va, vb = ua[i], ub[i]
+            vx = va[0] + (vb[0] - va[0]) * mk
+            vy = va[1] + (vb[1] - va[1]) * mk
+            vz = va[2] + (vb[2] - va[2]) * mk
+            ln = math.hypot(vx, math.hypot(vy, vz)) or 1.0
+            vx, vy, vz = vx / ln, vy / ln, vz / ln
             ox, oy, z, nx, ny, nz = project((vx * sc, vy * sc, vz * sc), cyw, syw, ct, st)
             lam = max(0.0, nx * LX + ny * LY + nz * LZ)
             shade = p["base"] * (0.22 + 0.42 * (z + 1) / 2 + 0.36 * lam)
             b = min(NB - 1, int(shade * NB))
             sx = int(cx + ox * radius * spring)
             sy = int(cy + oy * radius * spring)
-            if p["warm"]:
-                spr = warm_sprites[b]
+            d_scan = abs(i - scan_pos)
+            d_scan = min(d_scan, balls_n - d_scan)
+            if d_scan < 1.0:
+                spr = scan_sprites[0]
+            elif d_scan < 4.0:
+                spr = scan_sprites[1]
+            elif p["spark"]:
+                spr = spark_sprites[b]
             elif thinking and min(abs(i - lit_center), balls_n - abs(i - lit_center)) < lit_half:
                 spr = lit_sprites[b]
             else:
@@ -1673,7 +1748,7 @@ def gui():
             screen.blit(spr, (sx - spr.get_width() // 2, sy - spr.get_height() // 2),
                         special_flags=pygame.BLEND_ADD)
             rho = math.hypot(ox, oy) / radius
-            if 0.94 < rho <= 1.10 and not p["warm"]:
+            if 0.94 < rho <= 1.10 and not p["spark"] and d_scan >= 4.0:
                 rs = rim_soft[0] if rho <= 1.02 else rim_soft[1]
                 screen.blit(rs, (sx - rs.get_width() // 2, sy - rs.get_height() // 2),
                             special_flags=pygame.BLEND_ADD)
