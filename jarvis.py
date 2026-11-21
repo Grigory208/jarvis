@@ -58,6 +58,9 @@ VOSK_MODEL_URL = f"https://alphacephei.com/vosk/models/{VOSK_MODEL_NAME}.zip"
 
 EXIT_WORDS = ("выход", "exit", "quit", "спокойной ночи", "отключись")
 
+REPLY_CACHE = {}          # повторный вопрос — мгновенный ответ без запроса в сеть
+REPLY_CACHE_MAX = 20
+
 MGMT = os.environ.get("JARVIS_ADDRESS", "сэр")
 
 SYSTEM_PROMPT = (
@@ -661,6 +664,13 @@ def respond(query, history, engine):
         speak(engine, answer)
         return answer, history
 
+    key = re.sub(r"[!?.…,\s]+", " ", query.strip().lower()).strip()
+    if not history and key in REPLY_CACHE:
+        cached = REPLY_CACHE[key]
+        print("JARVIS > " + cached + "  [ из кэша ]")
+        speak(engine, cached)
+        return cached, history
+
     history = history + [{"role": "user", "content": query}]
     history = history[-12:]
 
@@ -686,8 +696,13 @@ def respond(query, history, engine):
     if not full.strip():
         print("[ модель вернула пустой ответ ]")
         return None, history[:-1]
-    history = history + [{"role": "assistant", "content": full.strip()}]
-    return full.strip(), history
+    full = full.strip()
+    if not history[:-1]:
+        if len(REPLY_CACHE) >= REPLY_CACHE_MAX:
+            REPLY_CACHE.pop(next(iter(REPLY_CACHE)))
+        REPLY_CACHE[key] = full
+    history = history + [{"role": "assistant", "content": full}]
+    return full, history
 
 # ----------------------------- Текстовый режим -----------------------------
 
