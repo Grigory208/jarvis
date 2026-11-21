@@ -93,11 +93,20 @@ SYSTEM_PROMPT = (
 
 # ----------------------------- Озвучка -----------------------------
 
+TTS_DIRS = [r"C:\Program Files\eSpeak NG", r"C:\Program Files (x86)\eSpeak NG",
+            os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "eSpeak NG")]
+
+
 def find_tts():
     for name in ("espeak-ng", "espeak"):
-        path = shutil.which(name)
-        if path:
-            return name
+        found = shutil.which(name)
+        if found:
+            return found
+    for d in TTS_DIRS:
+        for exe in ("espeak-ng.exe", "espeak.exe"):
+            p = os.path.join(d, exe)
+            if p and os.path.exists(p):
+                return p
     return None
 
 
@@ -1089,6 +1098,34 @@ def main_voice():
     finally:
         print(f"\nJARVIS отключён, {MGMT}.")
 
+def doctor():
+    """Диагностика: что видит JARVIS (озвучка, голос, движок, память)."""
+    print("=== JARVIS doctor ===")
+    tts = find_tts()
+    print(f"озвучка (espeak-ng): {tts or 'НЕ НАЙДЕНА'}")
+    if not tts:
+        print("  -> установите с https://github.com/espeak-ng/espeak-ng/releases")
+        print("     (msi для Windows), затем ОТКРОЙТЕ консоль заново")
+    for mod in ("vosk", "sounddevice"):
+        try:
+            __import__(mod)
+            print(f"голосовой режим, {mod}: ок")
+        except (ImportError, OSError) as exc:
+            print(f"голосовой режим, {mod}: НЕ НАЙДЕН ({exc}); поставь: pip install {mod}")
+    exe = find_ollama()
+    print(f"движок (ollama.exe): {exe or 'не найден'}")
+    print(f"сервер Ollama (порт 11434): {'поднят' if ollama_server_up() else 'не запущен'}")
+    if exe and ollama_server_up():
+        try:
+            print(f"модель {LOCAL_MODEL}: {'скачана' if ollama_has_model(exe) else 'нет — python jarvis.py setup'}")
+        except (urllib.error.URLError, OSError):
+            pass
+    print(f"ключ MISTRAL_API_KEY: {'задан' if API_KEY else 'нет (будет бесплатный Pollinations)'}")
+    mem = load_memory()
+    print(f"память ({os.path.basename(MEMORY_FILE)}): {len(mem)} факт(ов)")
+    print(f"город погоды: {CITY}; голос: {VOICE}; громкость: {VOLUME}")
+
+
 # ----------------------------- Точка входа -----------------------------
 
 if __name__ == "__main__":
@@ -1101,6 +1138,8 @@ if __name__ == "__main__":
     try:
         if len(sys.argv) > 1 and sys.argv[1].lower() in ("setup", "установить", "движок"):
             setup_engine()
+        elif len(sys.argv) > 1 and sys.argv[1].lower() in ("doctor", "diag", "доктор"):
+            doctor()
         elif len(sys.argv) > 1 and sys.argv[1].lower() in ("voice", "-v", "голос", "голосовой"):
             main_voice()
         else:
