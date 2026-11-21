@@ -42,7 +42,7 @@ POLLINATIONS_MODEL = os.environ.get("JARVIS_POLLINATIONS_MODEL", "openai-fast")
 
 VOICE = os.environ.get("JARVIS_VOICE", "ru")
 VARIANT = os.environ.get("JARVIS_VARIANT", "")   # например mb-ru2, если установлен mbrola
-RATE = os.environ.get("JARVIS_RATE", "155")
+RATE = os.environ.get("JARVIS_RATE", "125")
 PITCH = os.environ.get("JARVIS_PITCH", "45")
 MAX_TOKENS = int(os.environ.get("JARVIS_MAX_TOKENS", "300"))
 
@@ -728,6 +728,19 @@ TRANSLIT = {
     "браузер": "chrome", "брузер": "chrome",
     "проводник": "explorer", "провадник": "explorer",
     "консоль": "cmd", "командная": "cmd",
+    "параметры": "ms-settings:", "настройки": "ms-settings:", "стеттингс": "ms-settings:",
+    "студия": "code", "студию": "code", "студио": "code", "визуал": "code", "визвал": "code",
+    "фотошоп": "photoshop", "ворд": "winword", "ворде": "winword", "верд": "winword",
+    "эксель": "excel",
+}
+
+# Как называем программу в ответе (иначе espeak прочитает 'ms-settings:' вслух)
+APP_DISPLAY = {
+    "ms-settings:": "настройки Windows",
+    "code": "визуал студио",
+    "winword": "ворд",
+    "excel": "эксель",
+    "photoshop": "фотошоп",
 }
 
 OPEN_PREFIXES = ("открой", "открыть", "запусти", "запустить", "open", "launch", "старт")
@@ -750,12 +763,12 @@ def fix_recognition(text):
             continue
         best, ratio = w, 0.0
         for key, value in TRANSLIT.items():
-            if " " in key:
+            if " " in key or len(key) < 5:
                 continue
             r = difflib.SequenceMatcher(None, w, key).ratio()
             if r > ratio:
                 best, ratio = value, r
-        if ratio >= 0.75:
+        if ratio >= 0.85:
             words.append(best)
         else:
             words.append(raw)
@@ -768,7 +781,10 @@ def open_app(name):
         return False
     try:
         if os.name == "nt":
-            subprocess.run(["cmd", "/c", "start", "", name], check=False)
+            if name.startswith(("ms-settings:", "http")):
+                os.startfile(name)     # noqa: S606
+            else:
+                subprocess.run(["cmd", "/c", "start", "", name], check=False)
         elif shutil.which(name):
             subprocess.Popen([name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         else:
@@ -798,7 +814,7 @@ def handle_action(query, engine):
         if t.startswith(prefix + " "):
             target = t[len(prefix) + 1:].strip()
             if open_app(target):
-                reply = f"Открываю {target}, {MGMT}."
+                reply = f"Открываю {APP_DISPLAY.get(target, target)}, {MGMT}."
             else:
                 reply = f"Не нашёл программу {target}, {MGMT}."
             print("JARVIS > " + reply)
