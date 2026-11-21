@@ -117,10 +117,51 @@ def find_tts():
     return None
 
 
+ESPEAK_VOICE = None       # выбранный голос espeak (кэшируется после первой проверки)
+
+
+def list_espeak_voices(engine):
+    try:
+        result = subprocess.run([engine, "--voices"], capture_output=True,
+                                text=True, errors="ignore", timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    voices = []
+    for line in result.stdout.splitlines():
+        for token in line.split():
+            if re.fullmatch(r"[a-z]{2,3}(-[a-z0-9]+)*", token) and token not in voices:
+                voices.append(token)
+    return voices
+
+
+def resolve_voice(engine):
+    """Проверяет, есть ли голос VOICE у espeak; если нет — берёт ближайший вместо английского."""
+    global ESPEAK_VOICE
+    if ESPEAK_VOICE:
+        return ESPEAK_VOICE
+    if VARIANT:
+        ESPEAK_VOICE = f"{VOICE}+{VARIANT}"
+        return ESPEAK_VOICE
+    voices = list_espeak_voices(engine)
+    if not voices or VOICE in voices:
+        ESPEAK_VOICE = VOICE
+        return VOICE
+    same_lang = [v for v in voices if v == VOICE or v.startswith(VOICE + "-")]
+    if same_lang:
+        ESPEAK_VOICE = same_lang[0]
+        print(f"[ голос '{VOICE}' нет, использую '{ESPEAK_VOICE}' ]")
+        return ESPEAK_VOICE
+    if VOICE.startswith("ru"):
+        ESPEAK_VOICE = VOICE
+        return VOICE
+    ESPEAK_VOICE = VOICE
+    return VOICE
+
+
 def speak(engine, text):
     if not engine:
         return
-    voice = VOICE + (f"+{VARIANT}" if VARIANT else "")
+    voice = resolve_voice(engine)
     base = [engine, "-v", voice, "-s", RATE, "-p", PITCH, "-a", str(VOLUME)]
     try:
         if PLAYER:
@@ -1177,6 +1218,17 @@ def doctor():
     if not tts:
         print("  -> установите с https://github.com/espeak-ng/espeak-ng/releases")
         print("     (msi для Windows), затем ОТКРОЙТЕ консоль заново")
+    else:
+        try:
+            res = subprocess.run([tts, "--version"], capture_output=True,
+                                 text=True, errors="ignore", timeout=10)
+            ver = (res.stdout or res.stderr).strip().split("\n")[0]
+            if ver:
+                print(f"версия озвучки: {ver}")
+        except (OSError, subprocess.SubprocessError):
+            pass
+        ru = [v for v in list_espeak_voices(tts) if v.startswith("ru")]
+        print(f"русский голос espeak: {', '.join(ru) if ru else 'НЕТ — будет английский акцент'}")
     for mod in ("vosk", "sounddevice"):
         try:
             __import__(mod)
