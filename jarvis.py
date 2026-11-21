@@ -1334,7 +1334,411 @@ def _mix(c1, c2, k):
     return tuple(int(a + (b - a) * k) for a, b in zip(c1, c2))
 
 
+# ----------------------------- GUI: шар-ядро (pygame) -----------------------------
+
 def gui():
+    """Ядро Джарвиса в стиле референса (pygame): облако токенов со свечением,
+    подсказки-фразы, строка статуса, панель настроек по кнопке ⚙."""
+    global RATE, VOLUME, CITY, VOICE_STOP
+    try:
+        import pygame
+    except ImportError:
+        print("[ для красивого GUI нужен пакет pygame ]")
+        if ask_yes("установить pygame сейчас (pip install pygame)?"):
+            subprocess.run([sys.executable, "-m", "pip", "install", "pygame"], check=False)
+            try:
+                import pygame
+            except ImportError:
+                print("[ pygame не установился — открываю простое tkinter-окно ]")
+                gui_tk()
+                return
+        else:
+            gui_tk()
+            return
+
+    balls_n = max(120, min(420, int(os.environ.get("JARVIS_ORB_BALLS", "260"))))
+    W = max(340, int(os.environ.get("JARVIS_ORB_SIZE", "460")))
+    ORB_H = int(W * 0.72)
+    H = ORB_H + 108
+
+    pygame.init()
+    pygame.display.set_caption("JARVIS")
+    screen = pygame.display.set_mode((W, H))
+    clock = pygame.time.Clock()
+
+    hwnd = None
+    try:
+        hwnd = pygame.display.get_wm_info().get("window")
+    except Exception:
+        pass
+
+    def apply_topmost(on):
+        if hwnd and os.name == "nt":
+            try:
+                ctypes.windll.user32.SetWindowPos(hwnd, -1 if on else -2, 0, 0, 0, 0, 0x0001 | 0x0002)
+            except OSError:
+                pass
+
+    engine = find_tts()
+    if not engine:
+        print("[ предупреждение: espeak-ng не найден — озвучки не будет. "
+              "Автоустановка: python jarvis.py setup voice ]")
+
+    BG = (4, 9, 18)
+    CORE = (120, 198, 255)
+    DEEP = (26, 62, 104)
+    LITC = (205, 240, 255)
+    WARM = (165, 116, 76)
+    FG = (150, 210, 255)
+    DIM = (70, 115, 150)
+    ERR = (255, 130, 120)
+
+    def font(size, bold=False):
+        for name in ("consolas", "couriernew", "arial"):
+            try:
+                f = pygame.font.SysFont(name, size, bold=bold)
+                if f:
+                    return f
+            except Exception:
+                pass
+        return pygame.font.Font(None, size)
+
+    f_small = font(13)
+    f_mid = font(15, True)
+    f_btn = font(13, True)
+
+    def dot(core_col, glow_col, r):
+        size = r * 6
+        c = r * 3
+        surf = pygame.Surface((size, size), pygame.SRCALPHA)
+        for i in range(c, r, -1):
+            k = 1.0 - (i - r) / (r * 2)
+            k = k ** 3
+            col = tuple(int(v * k) for v in glow_col)
+            pygame.draw.circle(surf, col + (255,), (c, c), i)
+        pygame.draw.circle(surf, core_col + (255,), (c, c), r)
+        hi = (min(255, core_col[0] + 80), min(255, core_col[1] + 55), 255)
+        pygame.draw.circle(surf, hi + (255,), (c, c), max(1, r - 1))
+        return surf
+
+    orb_sprites = [dot(_mix(DEEP, CORE, b / 5), _mix(DEEP, CORE, b / 5), 1 + int(b * 0.6)) for b in range(6)]
+    lit_sprites = [dot(_mix(CORE, LITC, b / 5), LITC, 1 + int(b * 0.6)) for b in range(6)]
+    warm_sprites = [dot(_mix(WARM, (190, 140, 95), b / 5), WARM, 1 + int(b * 0.5)) for b in range(6)]
+    inner_sprites = [dot(_mix(DEEP, CORE, b / 5), DEEP, 1) for b in range(6)]
+    big_glow = pygame.Surface((W, W), pygame.SRCALPHA)
+    for i in range(W // 2, 0, -1):
+        k = 1.0 - i / (W / 2)
+        pygame.draw.circle(big_glow, (int(DEEP[0] * k ** 2), int(DEEP[1] * k ** 2), int(DEEP[2] * k ** 2), 255),
+                           (W // 2, W // 2), i)
+
+    cx = W / 2
+    cy = ORB_H / 2 + 6
+    radius = W * 0.30
+    golden = math.pi * (3 - 5 ** 0.5)
+    pts = []
+    for i in range(balls_n):
+        y = 1 - 2 * (i + 0.5) / balls_n
+        r = math.sqrt(max(0.0, 1 - y * y))
+        a = i * golden
+        pts.append({"unit": (r * math.cos(a), y, r * math.sin(a)),
+                    "warm": (i % 13 == 0),
+                    "ph": random.uniform(0, 6.28),
+                    "amp": random.uniform(0.006, 0.02)})
+    inner_n = max(6, balls_n // 20)
+    inner = [{"r": 0.35 + 0.42 * j / max(1, inner_n - 1),
+              "speed": 1.3 + (j % 4) * 0.9,
+              "phase": j * 1.7,
+              "ax": 0.5 + 0.22 * ((j * 7) % 3)} for j in range(inner_n)]
+
+    def project(v, cos_yaw, sin_yaw, cos_t, sin_t):
+        x, y, z = v
+        y2 = y * cos_t - z * sin_t
+        z2 = y * sin_t + z * cos_t
+        return (x * cos_yaw + z2 * sin_yaw, -y2, -x * sin_yaw + z2 * cos_yaw)
+
+    def persist():
+        save_gui_settings({"rate": RATE, "volume": VOLUME, "city": CITY})
+
+    def set_rate(v):
+        global RATE
+        RATE = str(max(20, min(200, int(v))))
+        os.environ["JARVIS_RATE"] = RATE
+        persist()
+
+    def set_vol(v):
+        global VOLUME
+        VOLUME = max(0, min(200, int(v)))
+        os.environ["JARVIS_VOLUME"] = str(VOLUME)
+        persist()
+
+    def set_city(s):
+        global CITY
+        CITY = s.strip() or "москва"
+        os.environ["JARVIS_CITY"] = CITY
+        persist()
+
+    voice_active = [False]
+    voice_btn_lbl = ["🎤 голос"]
+
+    def run_voice():
+        global VOICE_STOP
+        if voice_active[0]:
+            VOICE_STOP = True
+            voice_btn_lbl[0] = "🎤 останавливаю…"
+            return
+        VOICE_STOP = False
+        voice_active[0] = True
+        orb_notify("listen")
+        voice_btn_lbl[0] = "🎤 голос: вкл — выкл"
+
+        def worker():
+            try:
+                main_voice()
+            finally:
+                orb_notify("idle")
+                voice_active[0] = False
+                voice_btn_lbl[0] = "🎤 голос"
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    history = [[]]
+    last_action = [""]
+    info_override = [""]
+
+    def send(text):
+        info_override[0] = "обрабатываю: " + text
+        orb_notify("think")
+
+        def worker():
+            try:
+                reply, new_hist = respond(text, history[0], engine)
+                history[0] = new_hist
+                if reply:
+                    last_action[0] = "Готово: " + reply
+                else:
+                    last_action[0] = "Не смог выполнить, сэр"
+            except Exception as exc:
+                last_action[0] = f"Ошибка: {exc}"
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def default_hint():
+        if voice_active[0]:
+            return ("СЛУШАЮ", DIM)
+        return ("ОЖИДАНИЕ", DIM)
+
+    chip_labels = list(GUI_SUGGESTIONS[:3])
+    chip_surfs = [f_small.render("« " + t + " »", True, DIM) for t in chip_labels]
+    panel_visible = [False]
+    top_on = [os.environ.get("JARVIS_TOPMOST", "0") == "1"]
+    if top_on[0]:
+        apply_topmost(True)
+    city_val = [CITY]
+    entry_focus = [False]
+    drag = [None]
+    ui = {}
+    t0 = time.perf_counter()
+    next_twitch = [t0 + random.uniform(2, 6)]
+    twitch_t0 = [-10.0]
+
+    running = True
+    while running:
+        for ev in pygame.event.get():
+            if ev.type == pygame.QUIT:
+                running = False
+            elif ev.type == pygame.KEYDOWN:
+                if entry_focus[0]:
+                    if ev.key == pygame.K_BACKSPACE:
+                        city_val[0] = city_val[0][:-1]
+                        set_city(city_val[0])
+                    elif ev.unicode and ev.unicode not in "\r\n\x1b":
+                        city_val[0] += ev.unicode
+                        set_city(city_val[0])
+                    elif ev.key == pygame.K_ESCAPE:
+                        entry_focus[0] = False
+            elif ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
+                mx, my = ev.pos
+                if ui.get("gear") and ui["gear"].collidepoint(mx, my):
+                    panel_visible[0] = not panel_visible[0]
+                elif any(r.collidepoint(mx, my) for r in ui.get("chips", [])):
+                    for r, t in zip(ui.get("chips", []), chip_labels):
+                        if r.collidepoint(mx, my):
+                            entry_focus[0] = False
+                            send(t)
+                elif panel_visible[0]:
+                    hit = False
+                    for i, kr in enumerate(ui.get("knobs", [])):
+                        if kr.collidepoint(mx, my):
+                            drag[0] = i
+                            hit = True
+                    for i, (x0, x1, y) in enumerate(ui.get("tracks", [])):
+                        if x0 - 6 <= mx <= x1 + 6 and y - 10 <= my <= y + 10 and not hit:
+                            drag[0] = i
+                            hit = True
+                    if drag[0] is not None:
+                        x0, x1, _y = ui["tracks"][drag[0]]
+                        k = min(1.0, max(0.0, (mx - x0) / max(1, x1 - x0)))
+                        if drag[0] == 0:
+                            set_rate(20 + k * 180)
+                        else:
+                            set_vol(k * 200)
+                    elif ui.get("entry") and ui["entry"].collidepoint(mx, my):
+                        entry_focus[0] = True
+                        hit = True
+                    elif ui.get("check") and ui["check"].collidepoint(mx, my):
+                        top_on[0] = not top_on[0]
+                        apply_topmost(top_on[0])
+                    elif ui.get("voice_btn") and ui["voice_btn"].collidepoint(mx, my):
+                        run_voice()
+                    elif ui.get("doctor_btn") and ui["doctor_btn"].collidepoint(mx, my):
+                        threading.Thread(target=doctor, daemon=True).start()
+                    if not hit and ui.get("sheet") and not ui["sheet"].collidepoint(mx, my):
+                        entry_focus[0] = False
+        if drag[0] is not None and ui.get("tracks"):
+            mx, my = pygame.mouse.get_pos()
+            x0, x1, _y = ui["tracks"][drag[0]]
+            k = min(1.0, max(0.0, (mx - x0) / max(1, x1 - x0)))
+            if drag[0] == 0:
+                set_rate(20 + k * 180)
+            else:
+                set_vol(k * 200)
+
+        now = time.perf_counter()
+        t = now - t0
+        if now > next_twitch[0]:
+            next_twitch[0] = now + random.uniform(4, 9)
+            twitch_t0[0] = now
+        dt = now - twitch_t0[0]
+        spring = 1.0 + 0.075 * math.exp(-2.5 * dt) * math.cos(15 * dt)
+        if ORB_STATE in ("speak", "think"):
+            spring *= 1.0 + 0.03 * math.sin(t * 7)
+        tilt = 0.42 + 0.07 * math.sin(t * 0.25)
+        ct, st = math.cos(tilt), math.sin(tilt)
+        yaw = t * 0.4
+        cyw, syw = math.cos(yaw), math.sin(yaw)
+
+        thinking = ORB_STATE == "think"
+        lit_half = max(1.0, balls_n / 7.0)
+        lit_center = (t * balls_n / 2.0) if thinking else 0.0
+
+        screen.fill(BG)
+        gw = big_glow.get_width()
+        screen.blit(big_glow, (int(cx - gw / 2), int(cy - gw / 2)), special_flags=pygame.BLEND_ADD)
+
+        for i, p in enumerate(pts):
+            sc = 1.0 + p["amp"] * math.sin(t * 0.8 + p["ph"])
+            vx, vy, vz = p["unit"]
+            ox, oy, z = project((vx * sc, vy * sc, vz * sc), cyw, syw, ct, st)
+            depth = (z + 1) / 2
+            b = min(5, int(depth * 6))
+            sx = int(cx + ox * radius * spring)
+            sy = int(cy + oy * radius * spring)
+            if p["warm"]:
+                spr = warm_sprites[b]
+            elif thinking and min(abs(i - lit_center), balls_n - abs(i - lit_center)) < lit_half:
+                spr = lit_sprites[b]
+            else:
+                spr = orb_sprites[b]
+            screen.blit(spr, (sx - spr.get_width() // 2, sy - spr.get_height() // 2),
+                        special_flags=pygame.BLEND_ADD)
+
+        for j, part in enumerate(inner):
+            ang = t * part["speed"] + part["phase"]
+            v = (part["r"] * math.cos(ang),
+                 part["r"] * math.sin(ang) * part["ax"],
+                 part["r"] * math.sin(ang * 0.63))
+            ox, oy, z = project(v, cyw, syw, ct, st)
+            depth = (z + 1) / 2
+            b = min(5, int(depth * 6))
+            spr = inner_sprites[b]
+            sx = int(cx + ox * radius * spring)
+            sy = int(cy + oy * radius * spring)
+            screen.blit(spr, (sx - spr.get_width() // 2, sy - spr.get_height() // 2),
+                        special_flags=pygame.BLEND_ADD)
+
+        chips_x = cx - sum(s.get_width() for s in chip_surfs) / 2 - 10 * (len(chip_surfs) - 1) / 2
+        chips_y = H - 26
+        ui["chips"] = []
+        for s in chip_surfs:
+            rct = s.get_rect(topleft=(int(chips_x), int(chips_y)))
+            screen.blit(s, rct)
+            ui["chips"].append(rct)
+            chips_x += s.get_width() + 20
+
+        if ORB_STATE == "think":
+            info_txt, info_col = "ОБРАБАТЫВАЮ…", FG
+        elif ORB_STATE == "speak":
+            info_txt, info_col = "ГОВОРЮ", FG
+        elif ORB_STATE == "listen":
+            info_txt, info_col = "СЛУШАЮ", DIM
+        elif info_override[0] and not last_action[0]:
+            info_txt, info_col = info_override[0][:62], DIM
+        elif last_action[0]:
+            info_txt, info_col = last_action[0][:62], DIM
+        else:
+            info_txt, info_col = default_hint()
+        surf = f_mid.render(info_txt, True, info_col)
+        screen.blit(surf, surf.get_rect(center=(int(cx), H - 62)))
+
+        ui["gear"] = pygame.Rect(W - 30, 8, 22, 22)
+        gear_s = f_btn.render("⚙", True, FG if panel_visible[0] else DIM)
+        screen.blit(gear_s, (W - 26, 8))
+
+        if panel_visible[0]:
+            sheet = pygame.Surface((W - 16, 148), pygame.SRCALPHA)
+            sheet.fill((8, 20, 34, 216))
+            screen.blit(sheet, (8, 8))
+            ui["sheet"] = pygame.Rect(8, 8, W - 16, 148)
+
+            x0, x1 = 24, W - 104
+            ui["tracks"] = [(x0, x1, 46), (x0, x1, 82)]
+            ui["knobs"] = []
+            lab = f_small.render(f"скорость речи  {int(RATE)}", True, FG)
+            screen.blit(lab, (x0, 24))
+            pygame.draw.rect(screen, (26, 60, 92), (x0, 44, x1 - x0, 4), border_radius=2)
+            k = (int(RATE) - 20) / 180.0
+            kx = x0 + (x1 - x0) * k
+            pygame.draw.circle(screen, FG, (int(kx), 46), 7)
+            ui["knobs"].append(pygame.Rect(int(kx) - 9, 37, 18, 18))
+            lab = f_small.render(f"громкость  {int(VOLUME)}", True, FG)
+            screen.blit(lab, (x0, 62))
+            pygame.draw.rect(screen, (26, 60, 92), (x0, 80, x1 - x0, 4), border_radius=2)
+            k = VOLUME / 200.0
+            kx = x0 + (x1 - x0) * k
+            pygame.draw.circle(screen, FG, (int(kx), 82), 7)
+            ui["knobs"].append(pygame.Rect(int(kx) - 9, 73, 18, 18))
+
+            ui["entry"] = pygame.Rect(x0, 98, 150, 22)
+            pygame.draw.rect(screen, (10, 30, 50), ui["entry"], border_radius=4)
+            pygame.draw.rect(screen, FG if entry_focus[0] else (26, 60, 92), ui["entry"], 1, border_radius=4)
+            caret = "|" if (entry_focus[0] and int(t * 2) % 2 == 0) else ""
+            city_s = f_small.render((city_val[0] or "город погоды...") + caret, True, FG if city_val[0] else DIM)
+            screen.blit(city_s, (ui["entry"].x + 6, ui["entry"].y + 4))
+
+            ui["check"] = pygame.Rect(W - 150, 98, 22, 22)
+            pygame.draw.rect(screen, FG if top_on[0] else (26, 60, 92), ui["check"], 1, border_radius=4)
+            if top_on[0]:
+                pygame.draw.rect(screen, FG, (ui["check"].x + 4, ui["check"].y + 4, 14, 14), border_radius=3)
+            chk = f_small.render("поверх всех", True, FG)
+            screen.blit(chk, (W - 122, 102))
+
+            ui["voice_btn"] = pygame.Rect(24, 126, 120, 22)
+            pygame.draw.rect(screen, (14, 42, 68), ui["voice_btn"], border_radius=6)
+            vb = f_btn.render(voice_btn_lbl[0], True, FG)
+            screen.blit(vb, vb.get_rect(center=ui["voice_btn"].center))
+            ui["doctor_btn"] = pygame.Rect(152, 126, 84, 22)
+            pygame.draw.rect(screen, (14, 42, 68), ui["doctor_btn"], border_radius=6)
+            db = f_btn.render("doctor", True, FG)
+            screen.blit(db, db.get_rect(center=ui["doctor_btn"].center))
+
+        pygame.display.flip()
+        clock.tick(40)
+
+    VOICE_STOP = True
+    orb_notify("idle")
+    pygame.quit()
+
+def gui_tk():
     """Окно-оверлей: шар из «токенов» + статус + подсказки фраз (tkinter, без зависимостей)."""
     global RATE, VOLUME, CITY, VOICE_STOP
     try:
