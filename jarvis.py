@@ -502,6 +502,129 @@ def handle_action(query, engine):
             return reply
     return None
 
+# ------------- Встроенный движок: установка и запуск Ollama -------------
+
+OLLAMA_SETUP_URL = "https://ollama.com/download/OllamaSetup.exe"
+OLLAMA_INSTALL_CMD = "curl -fsSL https://ollama.com/install.sh | sh"
+
+
+def find_ollama():
+    exe = shutil.which("ollama")
+    if exe:
+        return exe
+    if os.name == "nt":
+        local = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Ollama", "ollama.exe")
+        if os.path.exists(local):
+            return local
+        local = os.path.join(os.environ.get("ProgramFiles", ""), "Ollama", "ollama.exe")
+        if os.path.exists(local):
+            return local
+    return None
+
+
+def ollama_server_up():
+    try:
+        urllib.request.urlopen("http://127.0.0.1:11434/api/tags", timeout=2).close()
+        return True
+    except OSError:
+        return False
+
+
+def start_ollama_server(exe):
+    print("[ запускаю сервер ollama serve... ]")
+    try:
+        subprocess.Popen([exe, "serve"],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError as exc:
+        print(f"[ не удалось запустить сервер: {exc} ]")
+        return False
+    for _ in range(45):
+        if ollama_server_up():
+            return True
+        time.sleep(1)
+    return False
+
+
+def ollama_has_model(exe):
+    try:
+        result = subprocess.run([exe, "list"], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    base = LOCAL_MODEL.split(":")[0]
+    return LOCAL_MODEL in result.stdout or base in result.stdout
+
+
+def install_ollama():
+    if os.name == "nt":
+        exe_path = os.path.join(tempfile.gettempdir(), "OllamaSetup.exe")
+        if not os.path.exists(exe_path):
+            print(f"[ скачиваю установщик Ollama для Windows (~700 МБ) в {exe_path} ]")
+
+            def report(blocks, block_size, total):
+                if total > 0:
+                    print(f"\r[ скачивание: {min(100, blocks * block_size * 100 // total)}% ]",
+                          end="", flush=True)
+
+            urllib.request.urlretrieve(OLLAMA_SETUP_URL, exe_path, reporthook=report)
+            print()
+        print("[ устанавливаю Ollama (тихая установка)... ]")
+        subprocess.run([exe_path, "/VERYSILENT"], check=False)
+    else:
+        print("[ устанавливаю Ollama через install.sh (понадобится sudo) ]")
+        subprocess.run(["sh", "-c", OLLAMA_INSTALL_CMD], check=False)
+
+
+def setup_engine():
+    """python jarvis.py setup — ставит движок, сервер и модель одной командой."""
+    exe = find_ollama()
+    if exe is None:
+        print("[ движок Ollama не найден. Установлю его локально: ]")
+        print("  Windows: установщик ~700 МБ, затем модель ~400 МБ.")
+        print("  Ollama остаётся вашей программой, работает без интернета и ключей.")
+        print("Продолжить? [y/N] ", end="", flush=True)
+        try:
+            answer = input().strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            answer = ""
+        if answer not in ("y", "yes", "да", "д", "дa"):
+            print("[ отмена. Движок можно поставить позже: python jarvis.py setup ]")
+            return
+        install_ollama()
+        exe = find_ollama()
+        if exe is None:
+            print("[ Ollama установлена, но не видна в PATH. Перезапустите терминал/скрипт ]")
+            return
+
+    if not ollama_server_up() and not start_ollama_server(exe):
+        print("[ сервер Ollama не поднялся — использовать её не получится ]")
+        return
+    print("[ движок Ollama работает ]")
+
+    if not ollama_has_model(exe):
+        print(f"[ скачиваю модель {LOCAL_MODEL} (~400 МБ, один раз) ]")
+        subprocess.run([exe, "pull", LOCAL_MODEL], check=False)
+    if ollama_has_model(exe):
+        print(f"[ готово: {LOCAL_MODEL} на месте. Запускайте jarvis.py обычно ]")
+        subprocess.run([exe, "run", LOCAL_MODEL, "Скажи привет одним словом"], check=False,
+                       capture_output=True)
+    else:
+        print(f"[ модель {LOCAL_MODEL} не загрузилась — проверьте интернет и повторите setup ]")
+
+
+def maybe_prepare_local_brain():
+    """Фоновый подхват: если Ollama установлена, но сервер не запущен — поднять."""
+    if API_KEY or ollama_server_up():
+        return
+    exe = find_ollama()
+    if exe is None:
+        print("[ движка нет — отвечаю через бесплатное облако Pollinations. "
+              "Подсказка: python jarvis.py setup поставит локальный движок Ollama ]")
+        return
+    if start_ollama_server(exe):
+        print("[ локальный движок Ollama на связи ]")
+    else:
+        print("[ Ollama есть, но сервер не поднялся — остаюсь на Pollinations ]")
+
 # ----------------------------- Единый ответ -----------------------------
 
 SENTENCE_SPLIT = re.compile(r"(?<=[.!?…\n])\s+")
@@ -569,6 +692,8 @@ def main_text():
         print("[ предупреждение: espeak-ng не найден — ответы будут только текстом. "
               "Установите: sudo apt install espeak-ng ]")
 
+    if not API_KEY:
+        maybe_prepare_local_brain()
     mode = ("Mistral API" if API_KEY else
             f"Ollama/{LOCAL_MODEL} -> Pollinations/{POLLINATIONS_MODEL}")
     print(f"=== JARVIS Lite | режим: {mode} | озвучка: {engine or 'нет'} ===")
@@ -632,6 +757,9 @@ def main_voice():
     if not engine:
         print("[ предупреждение: espeak-ng не найден — ответы будут только текстом ]")
 
+    if not API_KEY:
+        maybe_prepare_local_brain()
+
     model_path = ensure_vosk_model()
     print("[ загружаю vosk... ]")
     model = Model(model_path)
@@ -692,7 +820,9 @@ if __name__ == "__main__":
         except (OSError, ValueError):
             pass
     try:
-        if len(sys.argv) > 1 and sys.argv[1].lower() in ("voice", "-v", "голос", "голосовой"):
+        if len(sys.argv) > 1 and sys.argv[1].lower() in ("setup", "установить", "движок"):
+            setup_engine()
+        elif len(sys.argv) > 1 and sys.argv[1].lower() in ("voice", "-v", "голос", "голосовой"):
             main_voice()
         else:
             main_text()
