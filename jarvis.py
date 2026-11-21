@@ -42,7 +42,7 @@ POLLINATIONS_MODEL = os.environ.get("JARVIS_POLLINATIONS_MODEL", "openai-fast")
 
 VOICE = os.environ.get("JARVIS_VOICE", "ru")
 VARIANT = os.environ.get("JARVIS_VARIANT", "")   # например mb-ru2, если установлен mbrola
-RATE = os.environ.get("JARVIS_RATE", "125")
+RATE = os.environ.get("JARVIS_RATE", "48")
 PITCH = os.environ.get("JARVIS_PITCH", "45")
 MAX_TOKENS = int(os.environ.get("JARVIS_MAX_TOKENS", "300"))
 
