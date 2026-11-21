@@ -56,6 +56,9 @@ WAKE_WORDS = tuple(w.strip().lower() for w in os.environ.get(
 
 VOSK_MODEL_NAME = "vosk-model-small-ru-0.22"
 VOSK_MODEL_URL = f"https://alphacephei.com/vosk/models/{VOSK_MODEL_NAME}.zip"
+ESPEAK_MSI_URL = os.environ.get(
+    "JARVIS_ESPEAK_MSI",
+    "https://github.com/espeak-ng/espeak-ng/releases/download/1.52.0/espeak-ng.msi")
 
 EXIT_WORDS = ("выход", "exit", "quit", "спокойной ночи", "отключись")
 
@@ -93,20 +96,24 @@ SYSTEM_PROMPT = (
 
 # ----------------------------- Озвучка -----------------------------
 
-TTS_DIRS = [r"C:\Program Files\eSpeak NG", r"C:\Program Files (x86)\eSpeak NG",
-            os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "eSpeak NG")]
-
-
 def find_tts():
     for name in ("espeak-ng", "espeak"):
         found = shutil.which(name)
         if found:
             return found
-    for d in TTS_DIRS:
-        for exe in ("espeak-ng.exe", "espeak.exe"):
-            p = os.path.join(d, exe)
-            if p and os.path.exists(p):
-                return p
+    if os.name == "nt":
+        roots = (r"C:\Program Files", r"C:\Program Files (x86)",
+                 os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs"))
+        for root in roots:
+            if not root or not os.path.isdir(root):
+                continue
+            for d in os.listdir(root):
+                if "espeak" not in d.lower():
+                    continue
+                for exe in ("espeak-ng.exe", "espeak.exe"):
+                    p = os.path.join(root, d, exe)
+                    if os.path.exists(p):
+                        return p
     return None
 
 
@@ -834,6 +841,69 @@ def install_ollama():
         subprocess.run(["sh", "-c", OLLAMA_INSTALL_CMD], check=False)
 
 
+def ask_yes(prompt):
+    print(prompt + " [y/N] ", end="", flush=True)
+    try:
+        return input().strip().lower() in ("y", "yes", "да", "д", "дa")
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return False
+
+
+def install_espeak():
+    if os.name == "nt":
+        msi = os.path.join(tempfile.gettempdir(), "espeak-ng.msi")
+        if not os.path.exists(msi):
+            print(f"[ скачиваю espeak-ng (~13 МБ) в {msi} ]")
+
+            def report(blocks, block_size, total):
+                if total > 0:
+                    print(f"\r[ скачивание: {min(100, blocks * block_size * 100 // total)}% ]",
+                          end="", flush=True)
+
+            urllib.request.urlretrieve(ESPEAK_MSI_URL, msi, reporthook=report)
+            print()
+        print("[ устанавливаю espeak-ng (Windows может спросить разрешение) ]")
+        result = subprocess.run(["msiexec", "/i", msi, "/qn", "/norestart"], check=False)
+        if result.returncode != 0:
+            print(f"[ тихая установка не удалась (код {result.returncode}). "
+                  f"Запустите файл вручную: {msi} ]")
+    else:
+        print("[ ставлю espeak-ng через apt (понадобится sudo) ]")
+        subprocess.run(["sudo", "apt-get", "install", "-y", "espeak-ng"], check=False)
+
+
+def setup_voice():
+    """python jarvis.py setup voice — озвучка + пакеты голосового режима."""
+    engine = find_tts()
+    if engine is None:
+        if not ask_yes("[ озвучка espeak-ng не найдена. Установить её сейчас (~13 МБ)? ]"):
+            print("[ отмена. Позже: python jarvis.py setup voice ]")
+            return
+        install_espeak()
+        engine = find_tts()
+        if engine is None:
+            print("[ espeak-ng установлен, но не виден: ОТКРОЙТЕ консоль заново ]")
+            return
+        print(f"[ озвучка на месте: {engine} ]")
+    else:
+        print(f"[ озвучка уже есть: {engine} ]")
+
+    missing = []
+    for mod in ("vosk", "sounddevice"):
+        try:
+            __import__(mod)
+        except (ImportError, OSError):
+            missing.append(mod)
+    if missing:
+        if not ask_yes(f"[ для голосового режима нужны пакеты: {', '.join(missing)}. Через pip? ]"):
+            print("[ отмена. Позже: pip install " + " ".join(missing) + " ]")
+        else:
+            subprocess.run([sys.executable, "-m", "pip", "install"] + missing, check=False)
+    speak(find_tts(), "Голос на связи, сэр.")
+    print("[ проверка голоса выполнена. Если молчал — JARVIS_VOLUME или устройство вывода ]")
+
+
 def setup_engine():
     """python jarvis.py setup — ставит движок, сервер и модель одной командой."""
     exe = find_ollama()
@@ -978,7 +1048,7 @@ def main_text():
     engine = find_tts()
     if not engine:
         print("[ предупреждение: espeak-ng не найден — ответы будут только текстом. "
-              "Установите: sudo apt install espeak-ng ]")
+              "Автоустановка: python jarvis.py setup voice ]")
 
     if not API_KEY:
         maybe_prepare_local_brain()
@@ -1043,7 +1113,8 @@ def main_voice():
 
     engine = find_tts()
     if not engine:
-        print("[ предупреждение: espeak-ng не найден — ответы будут только текстом ]")
+        print("[ предупреждение: espeak-ng не найден — ответы будут только текстом. "
+              "Автоустановка: python jarvis.py setup voice ]")
 
     if not API_KEY:
         maybe_prepare_local_brain()
@@ -1137,7 +1208,10 @@ if __name__ == "__main__":
             pass
     try:
         if len(sys.argv) > 1 and sys.argv[1].lower() in ("setup", "установить", "движок"):
-            setup_engine()
+            if len(sys.argv) > 2 and sys.argv[2].lower() in ("voice", "tts", "голос", "озвучка"):
+                setup_voice()
+            else:
+                setup_engine()
         elif len(sys.argv) > 1 and sys.argv[1].lower() in ("doctor", "diag", "доктор"):
             doctor()
         elif len(sys.argv) > 1 and sys.argv[1].lower() in ("voice", "-v", "голос", "голосовой"):
