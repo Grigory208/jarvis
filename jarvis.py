@@ -1289,16 +1289,19 @@ def doctor():
 
 # ----------------------------- GUI: шар-ядро -----------------------------
 
-GUI_BG = "#060b14"
-GUI_BG_RGB = (6, 11, 20)
-GUI_FG = "#9fd8ff"
-GUI_FG_DIM = "#3a6a8f"
-ORB_DEEP = (14, 58, 108)
-ORB_NEAR = (90, 198, 255)
+GUI_BG = "#04070d"
+GUI_BG_RGB = (4, 7, 13)
+GUI_FG = "#8fd0ff"
+GUI_FG_DIM = "#2e5a78"
+GUI_ERR = "#ff8a80"
+ORB_CORE = (110, 190, 255)
+ORB_DEEP = (20, 60, 100)
 ORB_LIT = (185, 232, 255)
+ORB_WARM = (150, 105, 70)
 ORB_STATE = "idle"
 VOICE_STOP = False
 GUI_SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gui_settings.json")
+GUI_SUGGESTIONS = ("Открой YouTube", "Открой калькулятор", "Открой блокнот", "Как дела?", "Сколько времени?")
 
 
 def orb_notify(state):
@@ -1332,7 +1335,7 @@ def _mix(c1, c2, k):
 
 
 def gui():
-    """Окно с вращающимся ядром из «токенов» и панелью настроек (tkinter, без зависимостей)."""
+    """Окно-оверлей: шар из «токенов» + статус + подсказки фраз (tkinter, без зависимостей)."""
     global RATE, VOLUME, CITY, VOICE_STOP
     try:
         import tkinter as tk
@@ -1341,7 +1344,7 @@ def gui():
         main_text()
         return
 
-    balls_n = max(30, min(240, int(os.environ.get("JARVIS_ORB_BALLS", "110"))))
+    balls_n = max(60, min(260, int(os.environ.get("JARVIS_ORB_BALLS", "150"))))
     win_size = max(260, int(os.environ.get("JARVIS_ORB_SIZE", "420")))
 
     saved = load_gui_settings()
@@ -1360,16 +1363,33 @@ def gui():
     root.configure(bg=GUI_BG)
     root.resizable(False, False)
 
+    engine = find_tts()
+    if not engine:
+        print("[ предупреждение: espeak-ng не найден — слова будут только текстом. "
+              "Автоустановка: python jarvis.py setup voice ]")
+
     canvas = tk.Canvas(root, width=win_size, height=win_size, bg=GUI_BG, highlightthickness=0)
     canvas.pack(fill="x")
 
-    status = tk.Label(root, text="ОЖИДАНИЕ", bg=GUI_BG, fg=GUI_FG_DIM, font=("Consolas", 11, "bold"))
-    status.pack(pady=(0, 4))
+    cx = cy = win_size / 2.0
+    radius = win_size * 0.37
+    for grow, shade in ((0.98, "#071523"), (0.80, "#05121d")):
+        canvas.create_oval(cx - radius * grow, cy - radius * grow,
+                           cx + radius * grow, cy + radius * grow, fill=shade, outline="")
+
+    info = tk.Label(root, text="ОЖИДАНИЕ", bg=GUI_BG, fg=GUI_FG_DIM,
+                    font=("Consolas", 10, "bold"))
+    info.pack(pady=(0, 2))
+    last_action = [""]
+
+    chips = tk.Frame(root, bg=GUI_BG)
+    chips.pack(pady=(0, 8))
 
     panel = tk.Frame(root, bg=GUI_BG)
     rate_var = tk.IntVar(value=int(RATE))
     vol_var = tk.IntVar(value=VOLUME)
     city_var = tk.StringVar(value=CITY)
+    top_var = tk.BooleanVar(value=False)
 
     def changed(*_):
         global RATE, VOLUME, CITY
@@ -1381,18 +1401,28 @@ def gui():
         os.environ["JARVIS_CITY"] = CITY
         save_gui_settings({"rate": RATE, "volume": VOLUME, "city": CITY})
 
+    def on_top(*_):
+        try:
+            root.attributes("-topmost", bool(top_var.get()))
+        except OSError:
+            pass
+
     def _line(text):
         tk.Label(panel, text=text, bg=GUI_BG, fg=GUI_FG, font=("Consolas", 9)).pack(anchor="w", padx=6)
 
     _line("скорость речи (words/min)")
     tk.Scale(panel, from_=20, to=200, orient="horizontal", variable=rate_var, command=changed,
-             bg=GUI_BG, fg=GUI_FG, highlightthickness=0, troughcolor="#0d2033", length=280).pack(padx=8)
+             bg=GUI_BG, fg=GUI_FG, highlightthickness=0, troughcolor="#0a1a2b", length=280).pack(padx=8)
     _line("громкость озвучки (0-200)")
     tk.Scale(panel, from_=0, to=200, orient="horizontal", variable=vol_var, command=changed,
-             bg=GUI_BG, fg=GUI_FG, highlightthickness=0, troughcolor="#0d2033", length=280).pack(padx=8)
+             bg=GUI_BG, fg=GUI_FG, highlightthickness=0, troughcolor="#0a1a2b", length=280).pack(padx=8)
     _line("город погоды")
-    tk.Entry(panel, textvariable=city_var, bg="#0d2033", fg=GUI_FG, insertbackground=GUI_FG,
+    tk.Entry(panel, textvariable=city_var, bg="#0a1a2b", fg=GUI_FG, insertbackground=GUI_FG,
              relief="flat", width=22).pack(anchor="w", padx=8, pady=(0, 2))
+    tk.Checkbutton(panel, text="окно поверх всех", variable=top_var, command=on_top,
+                   bg=GUI_BG, fg=GUI_FG, activebackground=GUI_BG, activeforeground=GUI_FG,
+                   selectcolor="#0a1a2b", relief="flat", highlightthickness=0,
+                   font=("Consolas", 9)).pack(anchor="w", padx=6)
 
     voice_active = [False]
     voice_btn = None
@@ -1418,12 +1448,12 @@ def gui():
 
         threading.Thread(target=worker, daemon=True).start()
 
-    voice_btn = tk.Button(panel, text="🎤 голос", command=run_voice, bg="#0d2033", fg=GUI_FG,
+    voice_btn = tk.Button(panel, text="🎤 голос", command=run_voice, bg="#0a1a2b", fg=GUI_FG,
                           activebackground="#123a5c", activeforeground=GUI_FG, relief="flat",
                           font=("Consolas", 10), width=14)
     voice_btn.pack(side="left", padx=(6, 3), pady=6)
     tk.Button(panel, text="doctor", command=lambda: threading.Thread(target=doctor, daemon=True).start(),
-              bg="#0d2033", fg=GUI_FG, activebackground="#123a5c", activeforeground=GUI_FG,
+              bg="#0a1a2b", fg=GUI_FG, activebackground="#123a5c", activeforeground=GUI_FG,
               relief="flat", font=("Consolas", 10), width=8).pack(side="left", padx=3, pady=6)
 
     def toggle_panel():
@@ -1436,27 +1466,53 @@ def gui():
               activebackground=GUI_BG, activeforeground=GUI_FG, relief="flat",
               font=("Consolas", 12)).place(relx=1.0, x=-6, y=4, anchor="ne")
 
-    def on_close():
-        global VOICE_STOP
-        VOICE_STOP = True
-        root.destroy()
+    history = [[]]
 
-    root.protocol("WM_DELETE_WINDOW", on_close)
+    def send(text):
+        info.config(text=f"обрабатываю: {text}", fg=GUI_FG)
+        orb_notify("think")
 
-    cx = cy = win_size / 2.0
-    radius = win_size * 0.36
+        def worker():
+            try:
+                reply, new_hist = respond(text, history[0], engine)
+                history[0] = new_hist
+                if reply:
+                    last_action[0] = "Готово: " + reply
+                    root.after(0, lambda: info.config(
+                        text="Готово: " + reply[:90], fg=GUI_FG_DIM))
+                else:
+                    root.after(0, lambda: info.config(
+                        text="не смог выполнить, сэр", fg=GUI_ERR))
+            except Exception as exc:
+                root.after(0, lambda: info.config(text=f"ошибка: {exc}", fg=GUI_ERR))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def default_hint():
+        return "СЛУШАЮ" if voice_active[0] else "ОЖИДАНИЕ"
+
+    for text in GUI_SUGGESTIONS:
+        tk.Button(chips, text="«" + text + "»", command=lambda t=text: send(t),
+                  bg="#0a1a2b", fg=GUI_FG_DIM, activebackground="#123a5c",
+                  activeforeground=GUI_FG, relief="flat", font=("Consolas", 9),
+                  bd=0, padx=6).pack(side="left", padx=3)
+
     golden = math.pi * (3 - 5 ** 0.5)
     pts = []
     for i in range(balls_n):
         y = 1 - 2 * (i + 0.5) / balls_n
         r = math.sqrt(max(0.0, 1 - y * y))
         a = i * golden
-        pts.append((r * math.cos(a), y, r * math.sin(a)))
-    inner_n = max(4, balls_n // 12)
-    inner = [{"r": 0.35 + 0.4 * j / max(1, inner_n - 1),
-              "speed": 1.4 + (j % 3) * 1.1,
+        warm = (i % 13 == 0)
+        pts.append({"v": (r * math.cos(a), y, r * math.sin(a)),
+                    "warm": warm,
+                    "ph": random.uniform(0, 6.28),
+                    "amp": random.uniform(2.0, 5.5)})
+    inner_n = max(5, balls_n // 12)
+    inner = [{"r": 0.35 + 0.42 * j / max(1, inner_n - 1),
+              "speed": 1.3 + (j % 4) * 0.9,
               "phase": j * 1.7,
-              "ax": 0.5 + 0.25 * ((j * 7) % 3)}
+              "ax": 0.5 + 0.22 * ((j * 7) % 3)}
              for j in range(inner_n)]
 
     ids = [canvas.create_oval(-1, -1, -1, -1, fill="", outline="") for _ in pts]
@@ -1470,10 +1526,10 @@ def gui():
         return (x * cos_yaw + z2 * sin_yaw, -y2, -x * sin_yaw + z2 * cos_yaw)
 
     t0 = time.perf_counter()
-    next_twitch = [t0 + random.uniform(2, 6)]
+    next_twitch = [time.perf_counter() + random.uniform(2, 6)]
     twitch_t0 = [-10.0]
 
-    def tick():
+    def draw():
         now = time.perf_counter()
         t = now - t0
         if now > next_twitch[0]:
@@ -1485,25 +1541,28 @@ def gui():
             spring *= 1.0 + 0.03 * math.sin(t * 7)
         tilt = 0.42 + 0.07 * math.sin(t * 0.25)
         ct, st = math.cos(tilt), math.sin(tilt)
-        yaw = t * 0.45
+        yaw = t * 0.4
         cyw, syw = math.cos(yaw), math.sin(yaw)
 
         thinking = ORB_STATE == "think"
-        lit_half = max(1.0, balls_n / 6.0)
+        lit_half = max(1.0, balls_n / 7.0)
         lit_center = (t * balls_n / 2.0) if thinking else 0.0
 
-        for i, v in enumerate(pts):
-            ox, oy, z = project(v, cyw, syw, ct, st)
+        for i, p in enumerate(pts):
+            jitter = p["amp"] * math.sin(t * 0.9 + p["ph"])
+            vx, vy, vz = p["v"]
+            k = 1.0 + jitter / max(0.01, math.sqrt(vx * vx + vy * vy + vz * vz) or 1.0)
+            ox, oy, z = project((vx * k, vy * k, vz * k), cyw, syw, ct, st)
             depth = (z + 1) / 2
-            size = (1.7 + 4.3 * depth) * spring
+            size = (1.6 + 4.4 * depth) * spring
             sx = cx + ox * radius * spring
             sy = cy + oy * radius * spring
-            col = _mix(ORB_DEEP, ORB_NEAR, depth)
-            if thinking:
+            col = _mix(ORB_WARM, (60, 42, 30), depth) if p["warm"] else _mix(ORB_DEEP, ORB_CORE, depth)
+            if thinking and not p["warm"]:
                 d = min(abs(i - lit_center), balls_n - abs(i - lit_center))
-                k = 0.75 * max(0.0, 1.0 - d / lit_half)
-                if k > 0:
-                    col = _mix(col, ORB_LIT, k)
+                kk = 0.75 * max(0.0, 1.0 - d / lit_half)
+                if kk > 0:
+                    col = _mix(col, ORB_LIT, kk)
             canvas.coords(ids[i], sx - size, sy - size, sx + size, sy + size)
             if last_col[i] != col:
                 canvas.itemconfig(ids[i], fill=_rgb(col), outline="")
@@ -1519,24 +1578,35 @@ def gui():
             size = (1.2 + 2.2 * depth) * spring
             sx = cx + ox * radius * spring
             sy = cy + oy * radius * spring
-            col = _mix(_mix(ORB_DEEP, ORB_NEAR, depth), GUI_BG_RGB, 0.35)
+            col = _mix(_mix(ORB_DEEP, ORB_CORE, depth), GUI_BG_RGB, 0.35)
             n2 = balls_n + j
             canvas.coords(inner_ids[j], sx - size, sy - size, sx + size, sy + size)
             if last_col[n2] != col:
                 canvas.itemconfig(inner_ids[j], fill=_rgb(col), outline="")
                 last_col[n2] = col
 
-        want = {"idle": ("СЛУШАЮ" if voice_active[0] else "ОЖИДАНИЕ", GUI_FG_DIM),
-                "listen": ("СЛУШАЮ", GUI_FG_DIM),
-                "think": ("ОБРАБАТЫВАЮ…", GUI_FG),
-                "speak": ("ГОВОРЮ", GUI_FG)}.get(ORB_STATE, ("ОЖИДАНИЕ", GUI_FG_DIM))
-        if status.cget("text") != want[0]:
-            status.config(text=want[0], fg=want[1])
-        root.after(33, tick)
+        if ORB_STATE == "think":
+            want, fg = "ОБРАБАТЫВАЮ…", GUI_FG
+        elif ORB_STATE == "speak":
+            want, fg = "ГОВОРЮ", GUI_FG
+        elif ORB_STATE == "listen":
+            want, fg = "СЛУШАЮ", GUI_FG_DIM
+        elif last_action[0]:
+            want, fg = last_action[0][:90], GUI_FG_DIM
+        else:
+            want, fg = default_hint(), GUI_FG_DIM
+        if info.cget("text") != want:
+            info.config(text=want, fg=fg)
+        root.after(33, draw)
 
-    tick()
+    def safe_draw():
+        try:
+            draw()
+        except Exception:
+            root.after(200, safe_draw)
+
+    safe_draw()
     root.mainloop()
-
 
 # ----------------------------- Точка входа -----------------------------
 
