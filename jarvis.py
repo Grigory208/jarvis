@@ -61,6 +61,11 @@ EXIT_WORDS = ("выход", "exit", "quit", "спокойной ночи", "от
 REPLY_CACHE = {}          # повторный вопрос — мгновенный ответ без запроса в сеть
 REPLY_CACHE_MAX = 20
 
+MEMORY_FILE = os.environ.get(
+    "JARVIS_MEMORY",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "memory.json"))
+MEMORY_MAX = 100          # максимум фактов в постоянной памяти
+
 MGMT = os.environ.get("JARVIS_ADDRESS", "сэр")
 
 SYSTEM_PROMPT = (
@@ -166,7 +171,12 @@ def stream_ollama(messages):
 
 def stream_reply(history):
     """Генератор токенов ответа: ключ -> Ollama -> бесплатный Pollinations."""
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history
+    system = SYSTEM_PROMPT
+    memory = load_memory()
+    if memory:
+        system += ("\n\nЧто ты помнишь о хозяине (используй, когда уместно):\n"
+                   + "\n".join("- " + f for f in memory[-10:]))
+    messages = [{"role": "system", "content": system}] + history
     if API_KEY:
         try:
             yield from stream_mistral(messages)
@@ -202,6 +212,78 @@ NUMBER_WORDS = {
 def set_volume(value):
     global VOLUME
     VOLUME = max(0, min(200, int(value)))
+
+
+# ------------- Постоянная память (memory.json, переживает перезапуск) -------------
+
+def load_memory():
+    try:
+        with open(MEMORY_FILE, encoding="utf-8") as fh:
+            data = json.load(fh)
+        return [f.get("text", "").strip() for f in data.get("facts", [])
+                if f.get("text", "").strip()]
+    except (OSError, ValueError):
+        return []
+
+
+def save_memory(facts):
+    payload = {"facts": [{"text": t, "when": time.strftime("%Y-%m-%d %H:%M")}
+                         for t in facts]}
+    tmp = MEMORY_FILE + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, ensure_ascii=False, indent=1)
+        os.replace(tmp, MEMORY_FILE)
+    except OSError as exc:
+        print(f"[ не удалось сохранить память: {exc} ]")
+
+
+def handle_memory(query, engine):
+    """Запомни / что помнишь / забудь. Возвращает ответ или None."""
+    q = query.strip().lower()
+    m = re.match(r"(?:!)?(?:запомни(?:\s+что)?|запомнить|помни)\s*[,:!]?\s+(.+)", q)
+    if m:
+        facts = load_memory()
+        text = re.sub(r"^что\s+", "", m.group(1).strip(" .!"))
+        if text and text not in facts:
+            facts.append(text)
+            facts[:] = facts[-MEMORY_MAX:]
+            save_memory(facts)
+            reply = f"Запомнил: {text}, {MGMT}."
+        else:
+            reply = f"Это я уже помню, {MGMT}."
+        print("JARVIS > " + reply)
+        speak(engine, reply)
+        return reply
+    if re.search(r"что ты (?:обо мне\s+)?помнишь|что помнишь|что ты знаешь (?:обо )?мне", q):
+        facts = load_memory()
+        if facts:
+            shown = "; ".join(facts[-5:])
+            reply = f"Я помню {len(facts)} факт(ов): {shown}, {MGMT}."
+        else:
+            reply = f"Память пока пуста, {MGMT}. Скажите: запомни: ..."
+        print("JARVIS > " + reply)
+        speak(engine, reply)
+        return reply
+    if re.search(r"забудь\s+(?:вс[её]|все)|очисти(?!\s+окн)\s+память", q) or q in ("забудь всё",):
+        save_memory([])
+        reply = f"Все факты забыты, {MGMT}."
+        print("JARVIS > " + reply)
+        speak(engine, reply)
+        return reply
+    m = re.match(r"(?:!)?забудь(?:те)?\s+(?:про\s+|обо\s+мне\s+|об\s+)?(.+)", q)
+    if m:
+        word = m.group(1).strip(" .!")
+        def fact_hit(f):
+            tokens = re.findall(r"\w+", f)
+            return word in f or bool(difflib.get_close_matches(word, tokens, n=1, cutoff=0.72))
+        facts = [f for f in load_memory() if not fact_hit(f)]
+        save_memory(facts)
+        reply = f"Все упоминания «{word}» забыты, {MGMT}."
+        print("JARVIS > " + reply)
+        speak(engine, reply)
+        return reply
+    return None
 
 
 def instant_command(query):
@@ -657,6 +739,10 @@ def respond(query, history, engine):
     action_reply = handle_action(query, engine)
     if action_reply:
         return action_reply, history
+
+    memory_reply = handle_memory(query, engine)
+    if memory_reply:
+        return memory_reply, history
 
     answer = instant_command(query)
     if answer:
