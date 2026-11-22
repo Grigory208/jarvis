@@ -4,3 +4,4 @@ models/
 memory.json
 usage.json
 gui_settings.json
+custom_commands.json

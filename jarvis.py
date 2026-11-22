@@ -1128,6 +1128,15 @@ def respond(query, history, engine):
         query = PENDING_PREDICT.pop("q")
         PENDING_PREDICT.clear()
 
+    custom = match_custom_command(query)
+    if custom:
+        custom_reply = run_custom_command(custom)
+        if custom_reply:
+            log_action(query)
+            print("JARVIS > " + custom_reply)
+            speak(engine, custom_reply)
+            return custom_reply, history
+
     hotkey_reply = handle_hotkeys(query, engine)
     if hotkey_reply:
         log_action(query)
@@ -1414,6 +1423,73 @@ def save_gui_settings(data):
             json.dump(data, fh, ensure_ascii=False, indent=1)
     except OSError:
         pass
+
+
+CUSTOM_COMMANDS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "custom_commands.json")
+CUSTOM_TYPES = ("site", "app", "say", "cmd")
+CUSTOM_TYPE_LABELS = {"site": "сайт", "app": "программа", "say": "фраза", "cmd": "команда"}
+
+
+def load_custom_commands():
+    try:
+        with open(CUSTOM_COMMANDS_FILE, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return []
+    out = []
+    for c in (data if isinstance(data, list) else []):
+        if isinstance(c, dict) and c.get("phrase") and c.get("param") is not None:
+            out.append(c)
+    return out
+
+
+def save_custom_commands(cmds):
+    try:
+        with open(CUSTOM_COMMANDS_FILE, "w", encoding="utf-8") as fh:
+            json.dump(cmds, fh, ensure_ascii=False, indent=1)
+    except OSError:
+        pass
+
+
+def match_custom_command(query):
+    q = re.sub(r"[!?.…,;\s]+", " ", str(query or "").strip().lower()).strip()
+    if not q:
+        return None
+    best, best_score = None, 0.0
+    for c in load_custom_commands():
+        for raw in str(c.get("phrase", "")).lower().split(","):
+            phrase = raw.strip()
+            if not phrase:
+                continue
+            if q == phrase:
+                score = 1.0
+            elif phrase in q:
+                score = max(best_score, 0.95)
+            elif q in phrase:
+                score = max(best_score, 0.88)
+            else:
+                score = difflib.SequenceMatcher(None, q, phrase).ratio()
+            if score > best_score:
+                best, best_score = c, score
+    return best if best_score >= 0.82 else None
+
+
+def run_custom_command(c):
+    typ = c.get("type", "site")
+    param = str(c.get("param", "")).strip()
+    if typ == "site":
+        open_url(param)
+        return f"Открываю {param}, {MGMT}."
+    if typ == "app":
+        if open_app(param):
+            return f"Открываю {param}, {MGMT}."
+        return f"Не нашёл «{param}», {MGMT}."
+    if typ == "say":
+        return param or None
+    if typ == "cmd":
+        reply = instant_command(param)
+        return reply or f"Команда «{param}» мне неизвестна, {MGMT}."
+    return None
 
 
 def _rgb(col):
@@ -1785,6 +1861,13 @@ def gui():
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def draw_entry(rect, value, placeholder, focus):
+        pygame.draw.rect(screen, (10, 30, 50), rect, border_radius=4)
+        pygame.draw.rect(screen, FG if focus else (26, 60, 92), rect, 1, border_radius=4)
+        caret = "|" if (focus and int(t * 2) % 2 == 0) else ""
+        ef = f_small.render((value or placeholder) + caret, True, FG if value else DIM)
+        screen.blit(ef, (rect.x + 6, rect.y + 4))
+
     def default_hint():
         if voice_active[0]:
             return ("СЛУШАЮ", DIM)
@@ -1800,9 +1883,14 @@ def gui():
     if top_on[0]:
         apply_topmost(True)
     city_val = [CITY]
-    entry_focus = [False]
+    entry_focus = [""]
     drag = [None]
     ui = {}
+    cmds = load_custom_commands()
+    new_phrase = [""]
+    new_param = [""]
+    new_type = [0]
+    form_msg = [""]
     t0 = time.perf_counter()
     next_twitch = [t0 + random.uniform(2, 6)]
     twitch_t0 = [-10.0]
@@ -1815,19 +1903,22 @@ def gui():
             if ev.type == pygame.QUIT:
                 running = False
             elif ev.type == pygame.KEYDOWN:
-                if entry_focus[0]:
+                tgt = {"city": city_val, "phrase": new_phrase, "param": new_param}.get(entry_focus[0])
+                if tgt is not None:
                     if ev.key == pygame.K_BACKSPACE:
-                        city_val[0] = city_val[0][:-1]
-                        set_city(city_val[0])
+                        tgt[0] = tgt[0][:-1]
+                        if entry_focus[0] == "city":
+                            set_city(city_val[0])
                     elif ev.unicode and ev.unicode not in "\r\n\x1b":
-                        city_val[0] += ev.unicode
-                        set_city(city_val[0])
+                        tgt[0] += ev.unicode
+                        if entry_focus[0] == "city":
+                            set_city(city_val[0])
                     elif ev.key == pygame.K_ESCAPE:
-                        entry_focus[0] = False
+                        entry_focus[0] = ""
                 elif ev.key == pygame.K_ESCAPE:
                     if panel_visible[0]:
                         panel_visible[0] = False
-                        entry_focus[0] = False
+                        entry_focus[0] = ""
                         drag[0] = None
                     if help_visible[0]:
                         help_visible[0] = False
@@ -1853,14 +1944,15 @@ def gui():
                     hit = False
                     if ui.get("close") and ui["close"].collidepoint(mx, my):
                         panel_visible[0] = False
-                        entry_focus[0] = False
+                        entry_focus[0] = ""
                         hit = True
                     if not hit:
-                        for i, tr in enumerate(ui.get("tabs", [])):
-                            if tr.collidepoint(mx, my):
+                        for i, sr in enumerate(ui.get("sections", [])):
+                            if sr.collidepoint(mx, my):
                                 tab_i[0] = i
-                                entry_focus[0] = False
+                                entry_focus[0] = ""
                                 drag[0] = None
+                                form_msg[0] = ""
                                 hit = True
                     if not hit:
                         for i, kr in enumerate(ui.get("knobs", [])):
@@ -1882,14 +1974,41 @@ def gui():
                             else:
                                 balls_set[0] = int(max(120, min(700, round(v / 10) * 10)))
                                 persist()
-                    if not hit and ui.get("entry") and ui["entry"].collidepoint(mx, my):
-                        entry_focus[0] = True
-                        hit = True
+                    if not hit:
+                        for fid, r in ui.get("entries", []):
+                            if r.collidepoint(mx, my):
+                                entry_focus[0] = fid
+                                hit = True
+                                break
                     if not hit and ui.get("check") and ui["check"].collidepoint(mx, my):
                         top_on[0] = not top_on[0]
                         apply_topmost(top_on[0])
                         persist()
                         hit = True
+                    if not hit and ui.get("typebtn") and ui["typebtn"].collidepoint(mx, my):
+                        new_type[0] = (new_type[0] + 1) % len(CUSTOM_TYPES)
+                        entry_focus[0] = ""
+                        hit = True
+                    if not hit and ui.get("addbtn") and ui["addbtn"].collidepoint(mx, my):
+                        ph_txt = new_phrase[0].strip()
+                        pr_txt = new_param[0].strip()
+                        if ph_txt and pr_txt:
+                            cmds.append({"phrase": ph_txt, "type": CUSTOM_TYPES[new_type[0]], "param": pr_txt})
+                            save_custom_commands(cmds)
+                            new_phrase[0] = ""
+                            new_param[0] = ""
+                            form_msg[0] = "команда добавлена, сэр"
+                        else:
+                            form_msg[0] = "заполни фразу и параметр"
+                        hit = True
+                    if not hit and ui.get("delbtns"):
+                        for di, dr in ui["delbtns"]:
+                            if dr.collidepoint(mx, my):
+                                if 0 <= di < len(cmds):
+                                    cmds.pop(di)
+                                    save_custom_commands(cmds)
+                                form_msg[0] = ""
+                                hit = True
                     if not hit and ui.get("voice_btn") and ui["voice_btn"].collidepoint(mx, my):
                         run_voice()
                         hit = True
@@ -1898,10 +2017,10 @@ def gui():
                         hit = True
                     if not hit and ui.get("sheet"):
                         if ui["sheet"].collidepoint(mx, my):
-                            entry_focus[0] = False
+                            entry_focus[0] = ""
                         else:
                             panel_visible[0] = False
-                            entry_focus[0] = False
+                            entry_focus[0] = ""
                             drag[0] = None
         if drag[0] is not None and ui.get("tracks"):
             try:
@@ -2114,42 +2233,48 @@ def gui():
             for li, ltxt in enumerate((
                     "1. жми 🎤 (в ⚙) и говори: «джарвис, + команда»",
                     "2. или кликай фразы внизу — выполняется сразу",
-                    "3. ⚙ — скорость, громкость, город, поверх всех")):
+                    "3. ⚙ — настройки: голос, окно, свои команды, инфо")):
                 lf = f_small.render(ltxt, True, FG)
                 screen.blit(lf, (42, 52 + li * 22))
 
         if panel_visible[0]:
-            pw, ph = min(W - 24, 436), 228
-            px, py = (W - pw) // 2, max(6, (ORB_H - ph) // 2)
+            pw = min(W - 24, 520)
+            ph = min(H - 24, 288)
+            px, py = (W - pw) // 2, max(6, (H - ph) // 2)
             sheet = pygame.Surface((pw, ph), pygame.SRCALPHA)
             sheet.fill((9, 22, 36, 242))
             screen.blit(sheet, (px, py))
             ui["sheet"] = pygame.Rect(px, py, pw, ph)
             pygame.draw.rect(screen, (52, 110, 160), ui["sheet"], 1, border_radius=12)
-            head = f_mid.render("НАСТРОЙКИ", True, (225, 245, 255))
-            screen.blit(head, (px + 16, py + 12))
+            ui["knobs"] = []
+            ui["tracks"] = []
+            ui["entries"] = []
+            ui["delbtns"] = []
+            ui.pop("check", None)
+            ui.pop("typebtn", None)
+            ui.pop("addbtn", None)
+            SW = 128
+            sh = f_small.render("НАСТРОЙКИ", True, DIM)
+            screen.blit(sh, (px + 12, py + 14))
+            ui["sections"] = []
+            for si, sname in enumerate(("Голос", "Окно", "Команды", "Инфо")):
+                sr = pygame.Rect(px + 10, py + 46 + si * 32, SW - 20, 27)
+                ui["sections"].append(sr)
+                pygame.draw.rect(screen, (26, 64, 100) if tab_i[0] == si else (13, 32, 52), sr, border_radius=7)
+                sf = f_small.render(sname, True, FG if tab_i[0] == si else DIM)
+                screen.blit(sf, (sr.x + 10, sr.y + 6))
             ui["close"] = pygame.Rect(px + pw - 30, py + 10, 22, 22)
             hov = ui["close"].collidepoint(pygame.mouse.get_pos())
             pygame.draw.rect(screen, (170, 70, 70) if hov else (30, 66, 100), ui["close"], border_radius=6)
             cxs = f_small.render("✕", True, (255, 220, 220) if hov else FG)
             screen.blit(cxs, cxs.get_rect(center=ui["close"].center))
-            ui.pop("entry", None)
-            ui.pop("check", None)
-            tabs = ("Голос", "Окно", "Инфо")
-            ui["tabs"] = []
-            ui["knobs"] = []
-            ui["tracks"] = []
-            x0, x1 = px + 24, px + pw - 88
-            for ti, tname in enumerate(tabs):
-                tr = pygame.Rect(px + 16 + ti * 84, py + 40, 78, 24)
-                ui["tabs"].append(tr)
-                pygame.draw.rect(screen, (26, 64, 100) if tab_i[0] == ti else (14, 34, 54), tr, border_radius=7)
-                tf = f_small.render(tname, True, FG if tab_i[0] == ti else DIM)
-                screen.blit(tf, tf.get_rect(center=tr.center))
+            x0, x1 = px + SW + 12, px + pw - 18
+            top_m = f_mid.render(("Голос", "Окно", "Команды", "Инфо")[tab_i[0]], True, (225, 245, 255))
+            screen.blit(top_m, (x0, py + 14))
             if tab_i[0] == 0:
                 for label, val, lo, hi, y, tgt in (
-                        (f"скорость речи  {int(RATE)}", int(RATE), 20, 200, py + 96, 0),
-                        (f"громкость  {int(VOLUME)}", int(VOLUME), 0, 200, py + 130, 1)):
+                        (f"скорость речи  {int(RATE)}", int(RATE), 20, 200, py + 62, 0),
+                        (f"громкость  {int(VOLUME)}", int(VOLUME), 0, 200, py + 98, 1)):
                     lab = f_small.render(label, True, FG)
                     screen.blit(lab, (x0, y - 18))
                     pygame.draw.rect(screen, (26, 60, 92), (x0, y - 2, x1 - x0, 4), border_radius=2)
@@ -2158,38 +2283,84 @@ def gui():
                     pygame.draw.circle(screen, FG, (int(kx), y), 7)
                     ui["knobs"].append(pygame.Rect(int(kx) - 9, y - 9, 18, 18))
                     ui["tracks"].append((x0, x1, y, lo, hi, tgt))
-                ui["entry"] = pygame.Rect(x0, py + 150, 150, 22)
-                pygame.draw.rect(screen, (10, 30, 50), ui["entry"], border_radius=4)
-                pygame.draw.rect(screen, FG if entry_focus[0] else (26, 60, 92), ui["entry"], 1, border_radius=4)
-                caret = "|" if (entry_focus[0] and int(t * 2) % 2 == 0) else ""
-                city_s = f_small.render((city_val[0] or "город погоды...") + caret, True, FG if city_val[0] else DIM)
-                screen.blit(city_s, (ui["entry"].x + 6, ui["entry"].y + 4))
+                er = pygame.Rect(x0, py + 128, 170, 22)
+                ui["entries"].append(("city", er))
+                draw_entry(er, city_val[0], "город погоды...", entry_focus[0] == "city")
+                hint = f_small.render("город для команды «погода»", True, DIM)
+                screen.blit(hint, (x0 + 178, py + 133))
             elif tab_i[0] == 1:
                 lab = f_small.render(f"токенов в шаре: {balls_set[0]} (вступит после перезапуска)", True, FG)
-                screen.blit(lab, (x0, py + 76))
-                pygame.draw.rect(screen, (26, 60, 92), (x0, py + 94, x1 - x0, 4), border_radius=2)
+                screen.blit(lab, (x0, py + 44))
+                pygame.draw.rect(screen, (26, 60, 92), (x0, py + 62, x1 - x0, 4), border_radius=2)
                 k = min(1.0, max(0.0, (balls_set[0] - 120) / 580.0))
                 kx = x0 + (x1 - x0) * k
-                pygame.draw.circle(screen, FG, (int(kx), py + 96), 7)
-                ui["knobs"].append(pygame.Rect(int(kx) - 9, py + 87, 18, 18))
-                ui["tracks"].append((x0, x1, py + 96, 120, 700, 2))
-                ui["check"] = pygame.Rect(x0, py + 128, 22, 22)
+                pygame.draw.circle(screen, FG, (int(kx), py + 64), 7)
+                ui["knobs"].append(pygame.Rect(int(kx) - 9, py + 55, 18, 18))
+                ui["tracks"].append((x0, x1, py + 64, 120, 700, 2))
+                ui["check"] = pygame.Rect(x0, py + 100, 22, 22)
                 pygame.draw.rect(screen, FG if top_on[0] else (26, 60, 92), ui["check"], 1, border_radius=4)
                 if top_on[0]:
                     pygame.draw.rect(screen, FG, (ui["check"].x + 4, ui["check"].y + 4, 14, 14), border_radius=3)
                 chk = f_small.render("окно поверх всех", True, FG)
                 screen.blit(chk, (ui["check"].x + 30, ui["check"].y + 3))
                 hint = f_small.render("окно всегда видно поверх других программ", True, DIM)
-                screen.blit(hint, (x0, py + 164))
+                screen.blit(hint, (x0, py + 134))
+            elif tab_i[0] == 2:
+                y_form = py + ph - 148
+                max_rows = max(0, int((y_form - (py + 40)) // 20))
+                visible = cmds[-max_rows:] if max_rows else []
+                base_idx = len(cmds) - len(visible)
+                for ri, c in enumerate(visible):
+                    ry = py + 42 + ri * 20
+                    typ_lbl = CUSTOM_TYPE_LABELS.get(c.get("type"), "?")
+                    txt = f"«{c.get('phrase', '')}» → {typ_lbl}: {c.get('param', '')}"
+                    while txt and f_small.size(txt)[0] > (x1 - x0) - 30:
+                        txt = txt[:-2] + "…"
+                    rf = f_small.render(txt, True, FG)
+                    screen.blit(rf, (x0, ry))
+                    dr = pygame.Rect(x1 - 18, ry - 2, 16, 16)
+                    ui["delbtns"].append((base_idx + ri, dr))
+                    pygame.draw.rect(screen, (30, 66, 100), dr, border_radius=4)
+                    dxr = f_small.render("✕", True, DIM)
+                    screen.blit(dxr, dxr.get_rect(center=dr.center))
+                if not cmds:
+                    nf = f_small.render("пока нет своих команд — создай первую ниже", True, DIM)
+                    screen.blit(nf, (x0, py + 46))
+                lab = f_small.render("новая команда — фразы через запятую:", True, DIM)
+                screen.blit(lab, (x0, y_form))
+                pr_ = pygame.Rect(x0, y_form + 14, x1 - x0, 22)
+                ui["entries"].append(("phrase", pr_))
+                draw_entry(pr_, new_phrase[0], "фраза, например: включи музыку", entry_focus[0] == "phrase")
+                prm = pygame.Rect(x0, y_form + 40, x1 - x0 - 126, 22)
+                ui["entries"].append(("param", prm))
+                placeholders = {"site": "https://youtube.com", "app": "chrome",
+                                "say": "что озвучить", "cmd": "время"}
+                draw_entry(prm, new_param[0],
+                           placeholders[CUSTOM_TYPES[new_type[0]]], entry_focus[0] == "param")
+                ty_ = pygame.Rect(x1 - 118, y_form + 40, 118, 22)
+                ui["typebtn"] = ty_
+                pygame.draw.rect(screen, (16, 46, 74), ty_, border_radius=7)
+                tb = f_btn.render("тип: " + CUSTOM_TYPE_LABELS[CUSTOM_TYPES[new_type[0]]], True, FG)
+                screen.blit(tb, tb.get_rect(center=ty_.center))
+                ab = pygame.Rect(x1 - 118, y_form + 68, 118, 22)
+                ui["addbtn"] = ab
+                pygame.draw.rect(screen, (20, 62, 96), ab, border_radius=7)
+                abf = f_btn.render("добавить", True, LITC)
+                screen.blit(abf, abf.get_rect(center=ab.center))
+                if form_msg[0]:
+                    mf = f_small.render(form_msg[0], True, FG)
+                    screen.blit(mf, (x0, y_form + 73))
+                hf = f_small.render("создаёшь здесь — Джарвис слышит сразу, без перезапуска", True, DIM)
+                screen.blit(hf, (x0 + 126, y_form + 73))
             else:
                 tts_name = os.path.basename(engine) if engine else "нет (setup voice)"
                 for li, ltxt in enumerate((
                         f"озвучка: {tts_name}",
                         f"мозг: Ollama/{LOCAL_MODEL} → облако {POLLINATIONS_MODEL}",
                         f"память: {len(load_memory())} факт(ов) · город: {CITY}",
-                        f"орб: {balls_n} токенов · окно: {W}x{H}")):
+                        f"своих команд: {len(cmds)} · орб: {balls_n} токенов · окно: {W}x{H}")):
                     lf = f_small.render(ltxt, True, FG if li == 0 else DIM)
-                    screen.blit(lf, (x0, py + 86 + li * 22))
+                    screen.blit(lf, (x0, py + 56 + li * 24))
             ui["voice_btn"] = pygame.Rect(px + 16, py + ph - 38, 140, 24)
             pygame.draw.rect(screen, (16, 46, 74), ui["voice_btn"], border_radius=7)
             vb = f_btn.render(voice_btn_lbl[0], True, FG)
