@@ -9,6 +9,7 @@
 Озвучка — espeak-ng. Ответы — Mistral API, либо локальная Ollama как запасной вариант.
 """
 
+import atexit
 import difflib
 import ctypes
 import json
@@ -1400,6 +1401,7 @@ ORB_WARM = (150, 105, 70)
 ORB_STATE = "idle"
 VOICE_STOP = False
 GUI_SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gui_settings.json")
+OVERLAY_STOP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hud.stop")
 GUI_SUGGESTIONS = ("Открой YouTube", "Открой калькулятор", "Как дела?", "Открой блокнот", "Сколько времени?")
 
 
@@ -1792,10 +1794,15 @@ def gui():
                            "balls": balls_set[0], "topmost": top_on[0], "hud": hud_on[0]})
 
     def spawn_hud_overlay():
+        if hud_proc[0] is not None and hud_proc[0].poll() is None:
+            hud_proc[0].terminate()
+            hud_proc[0] = None
+            info_override[0] = "голограмма (HUD) скрыта"
+            return
         kwargs = {"creationflags": subprocess.CREATE_NO_WINDOW} \
             if sys.platform.startswith("win") and hasattr(subprocess, "CREATE_NO_WINDOW") else {}
-        subprocess.Popen([sys.executable, os.path.abspath(__file__), "hud"], **kwargs)
-        info_override[0] = "голограмма (HUD) поверх экрана: убрать — ✕ в правом верхнем углу"
+        hud_proc[0] = subprocess.Popen([sys.executable, os.path.abspath(__file__), "hud"], **kwargs)
+        info_override[0] = "голограмма (HUD) поверх экрана: убрать — Ctrl+Alt+J или кнопка ещё раз"
 
     def set_rate(v):
         global RATE
@@ -1889,6 +1896,8 @@ def gui():
     top_on = [bool(_gs.get("topmost", os.environ.get("JARVIS_TOPMOST", "0") == "1"))]
     hud_on = [bool(_gs.get("hud", True))]
     hud_mem = [0, 0.0]
+    hud_proc = [None]
+    atexit.register(_cleanup_hud_on_exit)
     if top_on[0]:
         apply_topmost(True)
     city_val = [CITY]
@@ -2457,6 +2466,11 @@ def gui():
 def hud_overlay():
     import pygame
     pygame.init()
+    try:
+        if os.path.exists(OVERLAY_STOP_FILE):
+            os.remove(OVERLAY_STOP_FILE)
+    except OSError:
+        pass
     _gs = load_gui_settings()
     transparent = sys.platform.startswith("win")
     info = pygame.display.Info()
@@ -2465,16 +2479,30 @@ def hud_overlay():
     KEY = (1, 2, 3)
     pygame.display.set_caption("JARVIS HUD")
     ok_trans = False
+    hwnd = None
+    hotkey_on = False
+    u32 = None
     if transparent:
         try:
             hwnd = pygame.display.get_wm_info()["window"]
             u32 = ctypes.windll.user32
-            u32.SetWindowLongW(hwnd, -20, u32.GetWindowLongW(hwnd, -20) | 0x00080000)
+            WS_EX_LAYERED, WS_EX_TRANSPARENT, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW = 0x00080000, 0x00000020, 0x08000000, 0x00000080
+            u32.SetWindowLongW(hwnd, -20, u32.GetWindowLongW(hwnd, -20)
+                               | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW)
             u32.SetLayeredWindowAttributes(hwnd, KEY[0] | (KEY[1] << 8) | (KEY[2] << 16), 0, 0x00000001)
-            u32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0001 | 0x0002)
+            u32.ShowWindow(hwnd, 4)
+            u32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)
             ok_trans = True
         except Exception:
-            pass
+            hwnd = None
+        try:
+            MOD_ALT, MOD_CONTROL, VK_J = 0x0001, 0x0002, 0x4A
+            u32.RegisterHotKey(None, 1, MOD_ALT | MOD_CONTROL, VK_J)
+            hotkey_on = True
+        except Exception:
+            hotkey_on = False
+    else:
+        hotkey_on = False
 
     def hf(sz):
         return pygame.font.Font(None, sz)
@@ -2488,15 +2516,36 @@ def hud_overlay():
         cmds_n = len(load_custom_commands())
     except Exception:
         cmds_n = 0
-    quit_r = pygame.Rect(W - 156, 26, 130, 26)
     cx0, cy0, ba = W // 2, H // 2, min(W, H)
+    WM_HOTKEY = 0x0312
+    last_top = 0.0
+    import ctypes.wintypes as wt
+    MSG_T = wt.MSG
     while True:
+        if hotkey_on and u32 is not None:
+            try:
+                msg = MSG_T()
+                while u32.PeekMessageW(ctypes.byref(msg), None, 0, 0, 0x0001):
+                    if msg.message == WM_HOTKEY:
+                        return
+            except Exception:
+                pass
+        if os.path.exists(OVERLAY_STOP_FILE):
+            try:
+                os.remove(OVERLAY_STOP_FILE)
+            except OSError:
+                pass
+            return
         for ev in pygame.event.get():
             if ev.type == pygame.QUIT:
                 return
-            if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1 and quit_r.collidepoint(ev.pos):
-                return
         t = time.perf_counter() - t0
+        if ok_trans and t - last_top > 5.0 and u32 is not None:
+            try:
+                u32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)
+            except Exception:
+                pass
+            last_top = t
         screen.fill(KEY if ok_trans else (3, 9, 18))
         for qpx, qpy, qdir in ((110, 110, 1), (W - 110, 110, -1), (110, H - 110, -1), (W - 110, H - 110, 1)):
             for ri, rr in enumerate((92, 134, 178)):
@@ -2544,12 +2593,18 @@ def hud_overlay():
             pygame.draw.rect(screen, GOLDC if bi % 6 == 0 else FG2, (wb + bi * 9, wob - hh, 6, hh), border_radius=2)
         wf = f_14.render("СИСТЕМЫ В НОРМЕ, СЭР", True, DIM2)
         screen.blit(wf, wf.get_rect(midtop=(W // 2, wob + 12)))
-        pygame.draw.rect(screen, (10, 28, 46), quit_r, border_radius=6)
-        pygame.draw.rect(screen, (150, 70, 70), quit_r, 1, border_radius=6)
-        qf = f_14.render("✕  закрыть hud", True, FG2)
-        screen.blit(qf, qf.get_rect(center=quit_r.center))
+        kf = f_14.render("CTRL+ALT+J — убрать голограмму", True, (110, 160, 195))
+        screen.blit(kf, kf.get_rect(midtop=(W // 2, 30)))
         pygame.display.flip()
         clock.tick(30)
+
+
+def _cleanup_hud_on_exit():
+    try:
+        with open(OVERLAY_STOP_FILE, "w", encoding="utf-8") as fh:
+            fh.write("stop")
+    except OSError:
+        pass
 
 
 def gui_tk():
