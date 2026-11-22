@@ -1527,7 +1527,7 @@ def gui():
     W = max(760, int(os.environ.get("JARVIS_ORB_SIZE", "1120")))
     H = max(560, int(os.environ.get("JARVIS_ORB_HEIGHT", str(int(W * 0.6)))))
     SW = 210
-    cx = SW + (W - SW) / 2
+    cx = SW + (W - SW) * 0.47
     cy = int(H * 0.44)
     radius = min(W - SW, H - 130) * 0.36
     ball_r = max(1, int(round(radius / 150.0)))
@@ -1791,6 +1791,12 @@ def gui():
         save_gui_settings({"rate": RATE, "volume": VOLUME, "city": CITY,
                            "balls": balls_set[0], "topmost": top_on[0], "hud": hud_on[0]})
 
+    def spawn_hud_overlay():
+        kwargs = {"creationflags": subprocess.CREATE_NO_WINDOW} \
+            if sys.platform.startswith("win") and hasattr(subprocess, "CREATE_NO_WINDOW") else {}
+        subprocess.Popen([sys.executable, os.path.abspath(__file__), "hud"], **kwargs)
+        info_override[0] = "голограмма (HUD) поверх экрана: убрать — ✕ в правом верхнем углу"
+
     def set_rate(v):
         global RATE
         RATE = str(max(20, min(200, int(v))))
@@ -1933,6 +1939,8 @@ def gui():
                     run_voice()
                 elif ui.get("doctor_btn") and ui["doctor_btn"].collidepoint(mx, my):
                     threading.Thread(target=doctor, daemon=True).start()
+                elif ui.get("holob") and ui["holob"].collidepoint(mx, my):
+                    spawn_hud_overlay()
                 elif ui.get("sbn") and any(sr.collidepoint(mx, my) for sr in ui["sbn"]):
                     for i, sr in enumerate(ui["sbn"]):
                         if sr.collidepoint(mx, my):
@@ -2229,7 +2237,7 @@ def gui():
                 screen.blit(surf2, (rx, ry0 + di * 20))
             bx = rx
             by = int(cy + 44)
-            for bi in range(28):
+            for bi in range(24):
                 hh = 3 + int((14 + 20 * act) * abs(math.sin(t * (2.2 + 0.31 * bi) + bi * 0.8)))
                 pygame.draw.rect(screen, GOLDC if bi % 7 == 0 else FG,
                                  (bx + bi * 8, by - hh, 5, hh), border_radius=2)
@@ -2288,6 +2296,11 @@ def gui():
             pygame.draw.rect(screen, (26, 64, 100) if sb_on else (13, 32, 52), sr, border_radius=7)
             sf2 = f_small.render(sname, True, FG if sb_on else DIM)
             screen.blit(sf2, (sr.x + 12, sr.y + 7))
+        ui["holob"] = pygame.Rect(16, H - 132, SW - 32, 28)
+        pygame.draw.rect(screen, (46, 38, 14), ui["holob"], border_radius=7)
+        pygame.draw.rect(screen, (150, 110, 40), ui["holob"], 1, border_radius=7)
+        hb_s = f_btn.render("голограмма (hud)", True, (255, 205, 120))
+        screen.blit(hb_s, hb_s.get_rect(center=ui["holob"].center))
         ui["voice_btn"] = pygame.Rect(16, H - 96, SW - 32, 28)
         pygame.draw.rect(screen, (16, 46, 74), ui["voice_btn"], border_radius=7)
         vb = f_btn.render(voice_btn_lbl[0], True, FG)
@@ -2440,6 +2453,104 @@ def gui():
     VOICE_STOP = True
     orb_notify("idle")
     pygame.quit()
+
+def hud_overlay():
+    import pygame
+    pygame.init()
+    _gs = load_gui_settings()
+    transparent = sys.platform.startswith("win")
+    info = pygame.display.Info()
+    W, H = info.current_w, info.current_h
+    screen = pygame.display.set_mode((W, H), pygame.NOFRAME if transparent else 0)
+    KEY = (1, 2, 3)
+    pygame.display.set_caption("JARVIS HUD")
+    ok_trans = False
+    if transparent:
+        try:
+            hwnd = pygame.display.get_wm_info()["window"]
+            u32 = ctypes.windll.user32
+            u32.SetWindowLongW(hwnd, -20, u32.GetWindowLongW(hwnd, -20) | 0x00080000)
+            u32.SetLayeredWindowAttributes(hwnd, KEY[0] | (KEY[1] << 8) | (KEY[2] << 16), 0, 0x00000001)
+            u32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0001 | 0x0002)
+            ok_trans = True
+        except Exception:
+            pass
+
+    def hf(sz):
+        return pygame.font.Font(None, sz)
+
+    f_22, f_14 = hf(23), hf(15)
+    FG2, GOLDC, DIM2 = (150, 210, 255), (255, 176, 64), (70, 125, 165)
+    clock = pygame.time.Clock()
+    t0 = time.perf_counter()
+    mem_cache = [0, 0.0]
+    try:
+        cmds_n = len(load_custom_commands())
+    except Exception:
+        cmds_n = 0
+    quit_r = pygame.Rect(W - 156, 26, 130, 26)
+    cx0, cy0, ba = W // 2, H // 2, min(W, H)
+    while True:
+        for ev in pygame.event.get():
+            if ev.type == pygame.QUIT:
+                return
+            if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1 and quit_r.collidepoint(ev.pos):
+                return
+        t = time.perf_counter() - t0
+        screen.fill(KEY if ok_trans else (3, 9, 18))
+        for qpx, qpy, qdir in ((110, 110, 1), (W - 110, 110, -1), (110, H - 110, -1), (W - 110, H - 110, 1)):
+            for ri, rr in enumerate((92, 134, 178)):
+                for si2 in range(2):
+                    a0 = qdir * t * (14 + 9 * ri) + ri * 40 + si2 * 130
+                    pygame.draw.arc(screen, GOLDC if ri == 1 else FG2,
+                                    (qpx - rr, qpy - rr, rr * 2, rr * 2),
+                                    math.radians(a0), math.radians(a0 + 58), 2)
+        for xi in range(40, W - 30, 26):
+            pygame.draw.line(screen, DIM2, (xi, 20), (xi, 27))
+            pygame.draw.line(screen, DIM2, (xi, H - 27), (xi, H - 20))
+        for rr in (int(ba * 0.31), int(ba * 0.43)):
+            pygame.draw.circle(screen, DIM2, (cx0, cy0), rr, 1)
+        for ai2 in range(24):
+            angg = math.radians(ai2 * 15 + t * 8)
+            pygame.draw.line(screen, DIM2,
+                             (int(cx0 + math.cos(angg) * ba * 0.30), int(cy0 + math.sin(angg) * ba * 0.30)),
+                             (int(cx0 + math.cos(angg) * ba * 0.335), int(cy0 + math.sin(angg) * ba * 0.335)))
+        if t - mem_cache[1] > 2.0:
+            mem_cache[1] = t
+            try:
+                mem_cache[0] = len(load_memory())
+            except Exception:
+                mem_cache[0] = 0
+        lx, ly = 64, H // 2 - 78
+        screen.blit(f_22.render("JARVIS  ·  MK-XV", True, GOLDC), (lx, ly))
+        for di, dtxt in enumerate((
+                f"ВРЕМЯ    {time.strftime('%H:%M:%S')}",
+                f"ДАТА     {time.strftime('%d.%m.%Y')}",
+                f"UPTIME   {int(t)} c",
+                f"ПАМЯТЬ   {mem_cache[0]} факт(ов)",
+                f"КОМАНД   {cmds_n}",
+                f"СТАТУС   СИСТЕМЫ В НОРМЕ")):
+            screen.blit(f_14.render(dtxt, True, FG2), (lx, ly + 44 + di * 22))
+        rr2, rcx, rcy = 118, W - 190, H // 2 - 40
+        pygame.draw.circle(screen, DIM2, (rcx, rcy), rr2, 1)
+        pygame.draw.circle(screen, DIM2, (rcx, rcy), int(rr2 * 0.55), 1)
+        swee = t * 1.6
+        pygame.draw.line(screen, FG2, (rcx, rcy),
+                         (int(rcx + math.cos(swee) * rr2), int(rcy + math.sin(swee) * rr2)), 2)
+        wob = H - 88
+        wb = W // 2 - 112
+        for bi in range(24):
+            hh = 4 + int(30 * abs(math.sin(t * (2.2 + 0.31 * bi) + bi * 0.8)))
+            pygame.draw.rect(screen, GOLDC if bi % 6 == 0 else FG2, (wb + bi * 9, wob - hh, 6, hh), border_radius=2)
+        wf = f_14.render("СИСТЕМЫ В НОРМЕ, СЭР", True, DIM2)
+        screen.blit(wf, wf.get_rect(midtop=(W // 2, wob + 12)))
+        pygame.draw.rect(screen, (10, 28, 46), quit_r, border_radius=6)
+        pygame.draw.rect(screen, (150, 70, 70), quit_r, 1, border_radius=6)
+        qf = f_14.render("✕  закрыть hud", True, FG2)
+        screen.blit(qf, qf.get_rect(center=quit_r.center))
+        pygame.display.flip()
+        clock.tick(30)
+
 
 def gui_tk():
     """Окно-оверлей: шар из «токенов» + статус + подсказки фраз (tkinter, без зависимостей)."""
@@ -2732,6 +2843,8 @@ if __name__ == "__main__":
                 setup_engine()
         elif len(sys.argv) > 1 and sys.argv[1].lower() in ("doctor", "diag", "доктор"):
             doctor()
+        elif len(sys.argv) > 1 and sys.argv[1].lower() in ("hud", "голограмма", "holo"):
+            hud_overlay()
         elif len(sys.argv) > 1 and sys.argv[1].lower() in ("gui", "шар", "окно"):
             gui()
         elif len(sys.argv) > 1 and sys.argv[1].lower() in ("voice", "-v", "голос", "голосовой"):
