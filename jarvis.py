@@ -1789,7 +1789,7 @@ def gui():
 
     def persist():
         save_gui_settings({"rate": RATE, "volume": VOLUME, "city": CITY,
-                           "balls": balls_set[0], "topmost": top_on[0]})
+                           "balls": balls_set[0], "topmost": top_on[0], "hud": hud_on[0]})
 
     def set_rate(v):
         global RATE
@@ -1881,6 +1881,8 @@ def gui():
     tab_i = [0]
     balls_set = [balls_n]
     top_on = [bool(_gs.get("topmost", os.environ.get("JARVIS_TOPMOST", "0") == "1"))]
+    hud_on = [bool(_gs.get("hud", True))]
+    hud_mem = [0, 0.0]
     if top_on[0]:
         apply_topmost(True)
     city_val = [CITY]
@@ -1980,6 +1982,10 @@ def gui():
                     if not hit and ui.get("check") and ui["check"].collidepoint(mx, my):
                         top_on[0] = not top_on[0]
                         apply_topmost(top_on[0])
+                        persist()
+                        hit = True
+                    if not hit and ui.get("hud_check") and ui["hud_check"].collidepoint(mx, my):
+                        hud_on[0] = not hud_on[0]
                         persist()
                         hit = True
                     if not hit and ui.get("typebtn") and ui["typebtn"].collidepoint(mx, my):
@@ -2182,6 +2188,52 @@ def gui():
         cw = core_halo.get_width()
         screen.blit(core_halo, (int(cx - cw / 2), int(cy - cw / 2)), special_flags=pygame.BLEND_ADD)
 
+        if hud_on[0]:
+            GOLDC = (255, 176, 64)
+            act = 1.0 if ORB_STATE in ("think", "speak") else 0.55
+            for _ri, (rr, sp, segs, hcol) in enumerate((
+                    (radius * 1.14, 0.55, 3, FG),
+                    (radius * 1.24, -0.38, 4, GOLDC),
+                    (radius * 1.34, 0.26, 2, FG))):
+                a0 = t * sp * 57.29
+                seg = 360 / segs
+                hb = pygame.Rect(int(cx - rr), int(cy - rr), int(rr * 2), int(rr * 2))
+                for s_i in range(segs):
+                    s0 = a0 + s_i * seg
+                    pygame.draw.arc(screen, hcol, hb, math.radians(s0), math.radians(s0 + seg * 0.62), 2)
+            for ti in range(48):
+                ang = math.radians(ti * 7.5 + t * 18)
+                twid = 5 + int(4 * math.sin(t * 2.4 + ti * 0.52)) * act
+                r1 = radius * 1.06
+                r2 = r1 + twid
+                tic = GOLDC if (ti % 6 == 0 and act > 0.8) else FG
+                pygame.draw.line(screen, tic,
+                                 (int(cx + math.cos(ang) * r1), int(cy + math.sin(ang) * r1)),
+                                 (int(cx + math.cos(ang) * r2), int(cy + math.sin(ang) * r2)))
+            if t - hud_mem[1] > 2.0:
+                hud_mem[1] = t
+                try:
+                    hud_mem[0] = len(load_memory())
+                except Exception:
+                    hud_mem[0] = 0
+            rx = int(cx + radius * 1.5)
+            ry0 = int(cy - 96)
+            for di, dtxt in enumerate((
+                    f"ВРЕМЯ   {time.strftime('%H:%M:%S')}",
+                    f"ДАТА    {time.strftime('%d.%m.%Y')}",
+                    f"UPTIME  {int(t)} c",
+                    f"ТОКЕНЫ  {balls_n}",
+                    f"ПАМЯТЬ  {hud_mem[0]}",
+                    f"КОМАНД  {len(cmds)}")):
+                surf2 = f_small.render(dtxt, True, (170, 215, 245))
+                screen.blit(surf2, (rx, ry0 + di * 20))
+            bx = rx
+            by = int(cy + 44)
+            for bi in range(28):
+                hh = 3 + int((14 + 20 * act) * abs(math.sin(t * (2.2 + 0.31 * bi) + bi * 0.8)))
+                pygame.draw.rect(screen, GOLDC if bi % 7 == 0 else FG,
+                                 (bx + bi * 8, by - hh, 5, hh), border_radius=2)
+
         chips_x = cx - sum(s.get_width() for s in chip_surfs) / 2 - 10 * (len(chip_surfs) - 1) / 2
         chips_y = H - 26
         ui["chips"] = []
@@ -2271,6 +2323,7 @@ def gui():
             ui["entries"] = []
             ui["delbtns"] = []
             ui.pop("check", None)
+            ui.pop("hud_check", None)
             ui.pop("typebtn", None)
             ui.pop("addbtn", None)
             x0, x1 = px + 24, px + pw - 24
@@ -2315,6 +2368,14 @@ def gui():
                 screen.blit(chk, (ui["check"].x + 30, ui["check"].y + 3))
                 hint = f_small.render("окно всегда видно поверх других программ", True, DIM)
                 screen.blit(hint, (x0, py + 166))
+                ui["hud_check"] = pygame.Rect(x0, py + 196, 22, 22)
+                pygame.draw.rect(screen, FG if hud_on[0] else (26, 60, 92), ui["hud_check"], 1, border_radius=4)
+                if hud_on[0]:
+                    pygame.draw.rect(screen, FG, (ui["hud_check"].x + 4, ui["hud_check"].y + 4, 14, 14), border_radius=3)
+                chk2 = f_small.render("HUD Iron Man", True, FG)
+                screen.blit(chk2, (ui["hud_check"].x + 30, ui["hud_check"].y + 3))
+                hint2 = f_small.render("кольца-дуги, тики, данные и волна вокруг шара", True, DIM)
+                screen.blit(hint2, (x0, py + 234))
             elif tab_i[0] == 2:
                 y_form = py + ph - 148
                 max_rows = max(0, int((y_form - (py + 48)) // 22))
