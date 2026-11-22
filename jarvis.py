@@ -1350,7 +1350,7 @@ def main_voice():
 
 def doctor():
     """Диагностика: что видит JARVIS (озвучка, голос, движок, память)."""
-    print("=== JARVIS doctor ===")
+    print(f"=== JARVIS doctor ({APP_VERSION}) ===")
     tts = find_tts()
     print(f"озвучка (espeak-ng): {tts or 'НЕ НАЙДЕНА'}")
     if not tts:
@@ -1402,6 +1402,7 @@ ORB_STATE = "idle"
 VOICE_STOP = False
 GUI_SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gui_settings.json")
 OVERLAY_STOP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hud.stop")
+APP_VERSION = "v16c"
 GUI_SUGGESTIONS = ("Открой YouTube", "Открой калькулятор", "Как дела?", "Открой блокнот", "Сколько времени?")
 
 
@@ -2630,7 +2631,8 @@ def hud_overlay():
         pygame.draw.circle(screen, GOLDC if state[0] == "think" else (225, 245, 255),
                            (ocx, ocy), 7 + (2 if state[0] == "speak" else 0))
         screen.blit(f_17.render("JARVIS", True, GOLDC), (panel.x + 12, panel.y + 10))
-        screen.blit(f_14.render("голограмма · чат", True, DIM2), (panel.x + 96, panel.y + 13))
+        screen.blit(f_14.render("голограмма · чат · " + APP_VERSION, True, DIM2),
+                    (panel.x + 96, panel.y + 13))
         pygame.draw.rect(screen, (150, 70, 70), close_r, border_radius=4)
         cf = f_14.render("✕", True, (255, 220, 220))
         screen.blit(cf, cf.get_rect(center=close_r.center))
