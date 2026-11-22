@@ -1403,7 +1403,7 @@ VOICE_STOP = False
 GUI_SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gui_settings.json")
 OVERLAY_STOP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hud.stop")
 HUD_LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hud.log")
-APP_VERSION = "v18-tk"
+APP_VERSION = "v19-tk"
 
 
 def _hud_log(msg):
@@ -2714,28 +2714,66 @@ def hud_overlay_tk():
                 _hud_log(f"work area: x={wx} y={wy} w={wr - wx} h={wb - wy}")
         except Exception:
             pass
-    root.geometry(f"{PW}x{PH}+{wr - PW - 18}+{wb - PH - 18}")
+    def spot_std(x, y):
+        try:
+            from PIL import ImageGrab, ImageStat
+            img = ImageGrab.grab(bbox=(x, y, x + PW, y + PH))
+            img = img.convert("L").resize((48, 48))
+            return ImageStat.Stat(img).stddev[0]
+        except Exception:
+            return 0.0
+
+    def pick_origin(skip=None):
+        cands = [(wr - PW - 18, wb - PH - 18), (wx + 18, wb - PH - 18),
+                 (wr - PW - 18, wy + 18), (wx + 18, wy + 18)]
+        best, best_v = None, None
+        for cx, cy in cands:
+            if skip and abs(cx - skip[0]) < 40 and abs(cy - skip[1]) < 40:
+                continue
+            v = spot_std(cx, cy)
+            _hud_log(f"spot ({cx},{cy}) busy={v:.1f}")
+            if best_v is None or v < best_v:
+                best, best_v = (cx, cy), v
+        return best or (wr - PW - 18, wb - PH - 18)
+
+    pos = list(pick_origin())
+    root.geometry(f"{PW}x{PH}+{pos[0]}+{pos[1]}")
 
     canvas = tk.Canvas(root, width=PW, height=PH, bg=TC, highlightthickness=0)
     canvas.place(x=0, y=0)
 
     def rounded(x0, y0, x1, y1, r, color):
-        canvas.create_rectangle(x0 + r, y0, x1 - r, y1, fill=color, outline="")
-        canvas.create_rectangle(x0, y0 + r, x1, y1 - r, fill=color, outline="")
+        ids = [canvas.create_rectangle(x0 + r, y0, x1 - r, y1, fill=color, outline=""),
+               canvas.create_rectangle(x0, y0 + r, x1, y1 - r, fill=color, outline="")]
         for cx, cy in ((x0 + r, y0 + r), (x1 - r, y0 + r), (x0 + r, y1 - r), (x1 - r, y1 - r)):
-            canvas.create_oval(cx - r, cy - r, cx + r, cy + r, fill=color, outline="")
+            ids.append(canvas.create_oval(cx - r, cy - r, cx + r, cy + r, fill=color, outline=""))
+        return ids
 
-    rounded(0, 0, PW, PH, 14, EDGE)
-    rounded(1, 1, PW - 1, PH - 1, 13, PANEL)
-    canvas.create_text(14, 20, text="JARVIS", fill=GOLD, anchor="w",
-                       font=("Segoe UI", 11, "bold"))
-    canvas.create_text(104, 21, text=f"голограмма · чат · {APP_VERSION}",
-                       fill=DIM, anchor="w", font=("Segoe UI", 9))
-    canvas.create_text(PW - 26, 24, text="✕", fill="#ff9c9c", font=("Segoe UI", 10))
+    r1 = rounded(0, 0, PW, PH, 14, EDGE)
+    r2 = rounded(1, 1, PW - 1, PH - 1, 13, PANEL)
+    title_id = canvas.create_text(14, 20, text="JARVIS", fill=GOLD, anchor="w",
+                                  font=("Segoe UI", 11, "bold"))
+    sub_id = canvas.create_text(104, 15, text=f"голограмма · чат · {APP_VERSION}",
+                                fill=DIM, anchor="w", font=("Segoe UI", 9))
+    hint_id = canvas.create_text(104, 30,
+                                 text="клик по шапке — свернуть · Ctrl+Alt+H — фоновое место",
+                                 fill=DIM, anchor="w", font=("Segoe UI", 8))
+    close_id = canvas.create_text(PW - 26, 24, text="✕", fill="#ff9c9c", font=("Segoe UI", 10))
 
-    ocx, ocy, orr = PW // 2, 84, 42
-    canvas.create_oval(ocx - orr - 5, ocy - orr - 5, ocx + orr + 5, ocy + orr + 5,
-                       outline="#12304f", fill="")
+    CPW, CPH = 110, 104
+    cr1 = rounded(0, 0, CPW, CPH, 12, EDGE)
+    cr2 = rounded(1, 1, CPW - 1, CPH - 1, 11, PANEL)
+    ctitle_id = canvas.create_text(CPW // 2, 11, text="JARVIS", fill=DIM,
+                                   font=("Segoe UI", 8))
+    cclose_id = canvas.create_text(CPW - 9, 10, text="✕", fill="#ff9c9c",
+                                   font=("Segoe UI", 8))
+    for iid in (cr1 + cr2 + [ctitle_id, cclose_id]):
+        canvas.itemconfigure(iid, state="hidden")
+
+    cur = [PW // 2, 84, 42]
+    ocx, ocy, orr = cur
+    ring_id = canvas.create_oval(ocx - orr - 5, ocy - orr - 5, ocx + orr + 5, ocy + orr + 5,
+                                 outline="#12304f", fill="")
 
     NP = 40
     dots = []
@@ -2805,10 +2843,41 @@ def hud_overlay_tk():
 
     entry.bind("<Return>", send)
 
+    compact = [False]
+
+    def apply_place():
+        w, h = (CPW, CPH) if compact[0] else (PW, PH)
+        root.geometry(f"{w}x{h}+{pos[0]}+{pos[1]}")
+
+    def show_compact(v):
+        compact[0] = v
+        for iid in (r1 + r2 + [title_id, sub_id, hint_id, close_id]):
+            canvas.itemconfigure(iid, state="hidden" if v else "normal")
+        for iid in (cr1 + cr2 + [ctitle_id, cclose_id]):
+            canvas.itemconfigure(iid, state="normal" if v else "hidden")
+        if v:
+            cur[0], cur[1], cur[2] = CPW // 2, 60, 34
+            chat_box.place_forget()
+            status.place_forget()
+            entry.place_forget()
+        else:
+            cur[0], cur[1], cur[2] = PW // 2, 84, 42
+            chat_box.place(x=12, y=150, width=PW - 24, height=PH - 224)
+            status.place(x=14, y=PH - 70)
+            entry.place(x=12, y=PH - 44, width=PW - 24, height=26)
+            entry.focus_set()
+        apply_place()
+
     def on_click(ev):
-        w = (ev.widget.winfo_name() or "").lower()
-        if ev.x > PW - 40 and ev.y < 36:
+        if compact[0]:
+            if ev.x > CPW - 22 and ev.y < 22:
+                root.destroy()
+            else:
+                show_compact(False)
+        elif ev.x > PW - 40 and ev.y < 36:
             root.destroy()
+        elif ev.y < 36:
+            show_compact(True)
         else:
             entry.focus_set()
     canvas.bind("<Button-1>", on_click)
@@ -2816,6 +2885,7 @@ def hud_overlay_tk():
     t0 = time.perf_counter()
 
     def frame():
+        ocx, ocy, orr = cur
         t = time.perf_counter() - t0
         sp = 5.0 if state[0] == "think" else 2.0
         for yy, rr2, base, i in dots:
@@ -2836,9 +2906,11 @@ def hud_overlay_tk():
         canvas.coords(core_id, ocx - r_core, ocy - r_core, ocx + r_core, ocy + r_core)
         canvas.itemconfigure(core_id,
                              fill=GOLD if state[0] == "think" else "#e1f5ff")
+        canvas.coords(ring_id, ocx - orr - 5, ocy - orr - 5, ocx + orr + 5, ocy + orr + 5)
         root.after(50, frame)
 
     stop_flag = [False]
+    move_flag = [False]
     thread_id = [0]
 
     def hotkey_loop():
@@ -2847,16 +2919,30 @@ def hud_overlay_tk():
         u = ctypes.windll.user32
         thread_id[0] = ctypes.windll.kernel32.GetCurrentThreadId()
         if u.RegisterHotKey(None, 1, 0x0001 | 0x0002, 0x4A):
+            u.RegisterHotKey(None, 2, 0x0001 | 0x0002, 0x48)
             msg = wt.MSG()
             while u.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
                 if msg.message == 0x0312:
-                    stop_flag[0] = True
-                    break
+                    if msg.wParam == 2:
+                        move_flag[0] = True
+                    else:
+                        stop_flag[0] = True
+                        break
             u.UnregisterHotKey(None, 1)
+            u.UnregisterHotKey(None, 2)
 
     threading.Thread(target=hotkey_loop, daemon=True).start()
 
     def poll():
+        if move_flag[0]:
+            move_flag[0] = False
+            try:
+                nx, ny = pick_origin(skip=(pos[0], pos[1]))
+                pos[0], pos[1] = nx, ny
+                apply_place()
+                _hud_log(f"repositioned to +{pos[0]}+{pos[1]}")
+            except Exception:
+                pass
         if stop_flag[0] or os.path.exists(OVERLAY_STOP_FILE):
             try:
                 os.remove(OVERLAY_STOP_FILE)
@@ -2870,7 +2956,7 @@ def hud_overlay_tk():
 
     poll()
     frame()
-    _hud_log(f"tk overlay shown at +{wr - PW - 18}+{wb - PH - 18}")
+    _hud_log(f"tk overlay v19 shown at +{pos[0]}+{pos[1]}")
     root.mainloop()
 
 
