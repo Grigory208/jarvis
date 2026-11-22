@@ -1446,7 +1446,8 @@ def gui():
             gui_tk()
             return
 
-    balls_n = max(120, min(700, int(os.environ.get("JARVIS_ORB_BALLS", "400"))))
+    _gs = load_gui_settings()
+    balls_n = max(120, min(700, int(os.environ.get("JARVIS_ORB_BALLS", str(int(_gs.get("balls", 400)))))))
     W = max(340, int(os.environ.get("JARVIS_ORB_SIZE", "460")))
     ORB_H = int(W * 0.72)
     H = ORB_H + 108
@@ -1636,7 +1637,7 @@ def gui():
 
     def form_earth(n):
         out = []
-        n_coast = int(n * 0.55)
+        n_coast = int(n * 0.80)
         tot = sum(_coast_per) or 1.0
         for _ring, _per in zip(COAST_RINGS, _coast_per):
             m = max(3, int(n_coast * _per / tot))
@@ -1657,7 +1658,7 @@ def gui():
                         break
                     acc += sl
         form_earth.coast_n = len(out)
-        while len(out) < int(n * 0.86):
+        while len(out) < int(n * 0.93):
             ring = COAST_RINGS[random.randrange(len(COAST_RINGS))]
             lat = random.uniform(min(p[0] for p in ring), max(p[0] for p in ring))
             lon = random.uniform(min(p[1] for p in ring), max(p[1] for p in ring))
@@ -1710,7 +1711,8 @@ def gui():
         return (x3 * p, -y2 * p, z3, x3, y2, z3)
 
     def persist():
-        save_gui_settings({"rate": RATE, "volume": VOLUME, "city": CITY})
+        save_gui_settings({"rate": RATE, "volume": VOLUME, "city": CITY,
+                           "balls": balls_set[0], "topmost": top_on[0]})
 
     def set_rate(v):
         global RATE
@@ -1792,7 +1794,9 @@ def gui():
     chip_surfs = [f_small.render("« " + t + " »", True, DIM) for t in chip_labels]
     panel_visible = [False]
     help_visible = [False]
-    top_on = [os.environ.get("JARVIS_TOPMOST", "0") == "1"]
+    tab_i = [0]
+    balls_set = [balls_n]
+    top_on = [bool(_gs.get("topmost", os.environ.get("JARVIS_TOPMOST", "0") == "1"))]
     if top_on[0]:
         apply_topmost(True)
     city_val = [CITY]
@@ -1820,6 +1824,15 @@ def gui():
                         set_city(city_val[0])
                     elif ev.key == pygame.K_ESCAPE:
                         entry_focus[0] = False
+                elif ev.key == pygame.K_ESCAPE:
+                    if panel_visible[0]:
+                        panel_visible[0] = False
+                        entry_focus[0] = False
+                        drag[0] = None
+                    if help_visible[0]:
+                        help_visible[0] = False
+            elif ev.type == pygame.MOUSEBUTTONUP and ev.button == 1:
+                drag[0] = None
             elif ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
                 mx, my = ev.pos
                 if ui.get("gear") and ui["gear"].collidepoint(mx, my):
@@ -1838,41 +1851,74 @@ def gui():
                     help_visible[0] = not help_visible[0]
                 elif panel_visible[0]:
                     hit = False
-                    for i, kr in enumerate(ui.get("knobs", [])):
-                        if kr.collidepoint(mx, my):
-                            drag[0] = i
-                            hit = True
-                    for i, (x0, x1, y) in enumerate(ui.get("tracks", [])):
-                        if x0 - 6 <= mx <= x1 + 6 and y - 10 <= my <= y + 10 and not hit:
-                            drag[0] = i
-                            hit = True
-                    if drag[0] is not None:
-                        x0, x1, _y = ui["tracks"][drag[0]]
-                        k = min(1.0, max(0.0, (mx - x0) / max(1, x1 - x0)))
-                        if drag[0] == 0:
-                            set_rate(20 + k * 180)
-                        else:
-                            set_vol(k * 200)
-                    elif ui.get("entry") and ui["entry"].collidepoint(mx, my):
+                    if ui.get("close") and ui["close"].collidepoint(mx, my):
+                        panel_visible[0] = False
+                        entry_focus[0] = False
+                        hit = True
+                    if not hit:
+                        for i, tr in enumerate(ui.get("tabs", [])):
+                            if tr.collidepoint(mx, my):
+                                tab_i[0] = i
+                                entry_focus[0] = False
+                                drag[0] = None
+                                hit = True
+                    if not hit:
+                        for i, kr in enumerate(ui.get("knobs", [])):
+                            if kr.collidepoint(mx, my):
+                                drag[0] = i
+                                hit = True
+                        for i, (tx0, tx1, ty, lo, hi, tgt) in enumerate(ui.get("tracks", [])):
+                            if tx0 - 6 <= mx <= tx1 + 6 and ty - 10 <= my <= ty + 10 and not hit:
+                                drag[0] = i
+                                hit = True
+                        if drag[0] is not None:
+                            tx0, tx1, _ty, lo, hi, tgt = ui["tracks"][drag[0]]
+                            k = min(1.0, max(0.0, (mx - tx0) / max(1, tx1 - tx0)))
+                            v = lo + k * (hi - lo)
+                            if tgt == 0:
+                                set_rate(v)
+                            elif tgt == 1:
+                                set_vol(v)
+                            else:
+                                balls_set[0] = int(max(120, min(700, round(v / 10) * 10)))
+                                persist()
+                    if not hit and ui.get("entry") and ui["entry"].collidepoint(mx, my):
                         entry_focus[0] = True
                         hit = True
-                    elif ui.get("check") and ui["check"].collidepoint(mx, my):
+                    if not hit and ui.get("check") and ui["check"].collidepoint(mx, my):
                         top_on[0] = not top_on[0]
                         apply_topmost(top_on[0])
-                    elif ui.get("voice_btn") and ui["voice_btn"].collidepoint(mx, my):
+                        persist()
+                        hit = True
+                    if not hit and ui.get("voice_btn") and ui["voice_btn"].collidepoint(mx, my):
                         run_voice()
-                    elif ui.get("doctor_btn") and ui["doctor_btn"].collidepoint(mx, my):
+                        hit = True
+                    if not hit and ui.get("doctor_btn") and ui["doctor_btn"].collidepoint(mx, my):
                         threading.Thread(target=doctor, daemon=True).start()
-                    if not hit and ui.get("sheet") and not ui["sheet"].collidepoint(mx, my):
-                        entry_focus[0] = False
+                        hit = True
+                    if not hit and ui.get("sheet"):
+                        if ui["sheet"].collidepoint(mx, my):
+                            entry_focus[0] = False
+                        else:
+                            panel_visible[0] = False
+                            entry_focus[0] = False
+                            drag[0] = None
         if drag[0] is not None and ui.get("tracks"):
-            mx, my = pygame.mouse.get_pos()
-            x0, x1, _y = ui["tracks"][drag[0]]
-            k = min(1.0, max(0.0, (mx - x0) / max(1, x1 - x0)))
-            if drag[0] == 0:
-                set_rate(20 + k * 180)
+            try:
+                tx0, tx1, _ty, lo, hi, tgt = ui["tracks"][drag[0]]
+            except (IndexError, ValueError):
+                drag[0] = None
             else:
-                set_vol(k * 200)
+                mx, my = pygame.mouse.get_pos()
+                k = min(1.0, max(0.0, (mx - tx0) / max(1, tx1 - tx0)))
+                v = lo + k * (hi - lo)
+                if tgt == 0:
+                    set_rate(v)
+                elif tgt == 1:
+                    set_vol(v)
+                else:
+                    balls_set[0] = int(max(120, min(700, round(v / 10) * 10)))
+                    persist()
 
         now = time.perf_counter()
         t = now - t0
@@ -1964,7 +2010,7 @@ def gui():
             if fa == 3 or fb == 3:
                 if i < getattr(form_earth, "coast_n", 0):
                     shade = max(shade, 0.95)
-                elif i < getattr(form_earth, "land_n", int(balls_n * 0.86)):
+                elif i < getattr(form_earth, "land_n", int(balls_n * 0.93)):
                     shade = max(shade, 0.6)
                 else:
                     shade *= 0.35
@@ -2073,49 +2119,83 @@ def gui():
                 screen.blit(lf, (42, 52 + li * 22))
 
         if panel_visible[0]:
-            sheet = pygame.Surface((W - 16, 148), pygame.SRCALPHA)
-            sheet.fill((8, 20, 34, 216))
-            screen.blit(sheet, (8, 8))
-            ui["sheet"] = pygame.Rect(8, 8, W - 16, 148)
-
-            x0, x1 = 24, W - 104
-            ui["tracks"] = [(x0, x1, 46), (x0, x1, 82)]
+            pw, ph = min(W - 24, 436), 228
+            px, py = (W - pw) // 2, max(6, (ORB_H - ph) // 2)
+            sheet = pygame.Surface((pw, ph), pygame.SRCALPHA)
+            sheet.fill((9, 22, 36, 242))
+            screen.blit(sheet, (px, py))
+            ui["sheet"] = pygame.Rect(px, py, pw, ph)
+            pygame.draw.rect(screen, (52, 110, 160), ui["sheet"], 1, border_radius=12)
+            head = f_mid.render("НАСТРОЙКИ", True, (225, 245, 255))
+            screen.blit(head, (px + 16, py + 12))
+            ui["close"] = pygame.Rect(px + pw - 30, py + 10, 22, 22)
+            hov = ui["close"].collidepoint(pygame.mouse.get_pos())
+            pygame.draw.rect(screen, (170, 70, 70) if hov else (30, 66, 100), ui["close"], border_radius=6)
+            cxs = f_small.render("✕", True, (255, 220, 220) if hov else FG)
+            screen.blit(cxs, cxs.get_rect(center=ui["close"].center))
+            ui.pop("entry", None)
+            ui.pop("check", None)
+            tabs = ("Голос", "Окно", "Инфо")
+            ui["tabs"] = []
             ui["knobs"] = []
-            lab = f_small.render(f"скорость речи  {int(RATE)}", True, FG)
-            screen.blit(lab, (x0, 24))
-            pygame.draw.rect(screen, (26, 60, 92), (x0, 44, x1 - x0, 4), border_radius=2)
-            k = (int(RATE) - 20) / 180.0
-            kx = x0 + (x1 - x0) * k
-            pygame.draw.circle(screen, FG, (int(kx), 46), 7)
-            ui["knobs"].append(pygame.Rect(int(kx) - 9, 37, 18, 18))
-            lab = f_small.render(f"громкость  {int(VOLUME)}", True, FG)
-            screen.blit(lab, (x0, 62))
-            pygame.draw.rect(screen, (26, 60, 92), (x0, 80, x1 - x0, 4), border_radius=2)
-            k = VOLUME / 200.0
-            kx = x0 + (x1 - x0) * k
-            pygame.draw.circle(screen, FG, (int(kx), 82), 7)
-            ui["knobs"].append(pygame.Rect(int(kx) - 9, 73, 18, 18))
-
-            ui["entry"] = pygame.Rect(x0, 98, 150, 22)
-            pygame.draw.rect(screen, (10, 30, 50), ui["entry"], border_radius=4)
-            pygame.draw.rect(screen, FG if entry_focus[0] else (26, 60, 92), ui["entry"], 1, border_radius=4)
-            caret = "|" if (entry_focus[0] and int(t * 2) % 2 == 0) else ""
-            city_s = f_small.render((city_val[0] or "город погоды...") + caret, True, FG if city_val[0] else DIM)
-            screen.blit(city_s, (ui["entry"].x + 6, ui["entry"].y + 4))
-
-            ui["check"] = pygame.Rect(W - 150, 98, 22, 22)
-            pygame.draw.rect(screen, FG if top_on[0] else (26, 60, 92), ui["check"], 1, border_radius=4)
-            if top_on[0]:
-                pygame.draw.rect(screen, FG, (ui["check"].x + 4, ui["check"].y + 4, 14, 14), border_radius=3)
-            chk = f_small.render("поверх всех", True, FG)
-            screen.blit(chk, (W - 122, 102))
-
-            ui["voice_btn"] = pygame.Rect(24, 126, 120, 22)
-            pygame.draw.rect(screen, (14, 42, 68), ui["voice_btn"], border_radius=6)
+            ui["tracks"] = []
+            x0, x1 = px + 24, px + pw - 88
+            for ti, tname in enumerate(tabs):
+                tr = pygame.Rect(px + 16 + ti * 84, py + 40, 78, 24)
+                ui["tabs"].append(tr)
+                pygame.draw.rect(screen, (26, 64, 100) if tab_i[0] == ti else (14, 34, 54), tr, border_radius=7)
+                tf = f_small.render(tname, True, FG if tab_i[0] == ti else DIM)
+                screen.blit(tf, tf.get_rect(center=tr.center))
+            if tab_i[0] == 0:
+                for label, val, lo, hi, y, tgt in (
+                        (f"скорость речи  {int(RATE)}", int(RATE), 20, 200, py + 96, 0),
+                        (f"громкость  {int(VOLUME)}", int(VOLUME), 0, 200, py + 130, 1)):
+                    lab = f_small.render(label, True, FG)
+                    screen.blit(lab, (x0, y - 18))
+                    pygame.draw.rect(screen, (26, 60, 92), (x0, y - 2, x1 - x0, 4), border_radius=2)
+                    k = min(1.0, max(0.0, (val - lo) / max(1, hi - lo)))
+                    kx = x0 + (x1 - x0) * k
+                    pygame.draw.circle(screen, FG, (int(kx), y), 7)
+                    ui["knobs"].append(pygame.Rect(int(kx) - 9, y - 9, 18, 18))
+                    ui["tracks"].append((x0, x1, y, lo, hi, tgt))
+                ui["entry"] = pygame.Rect(x0, py + 150, 150, 22)
+                pygame.draw.rect(screen, (10, 30, 50), ui["entry"], border_radius=4)
+                pygame.draw.rect(screen, FG if entry_focus[0] else (26, 60, 92), ui["entry"], 1, border_radius=4)
+                caret = "|" if (entry_focus[0] and int(t * 2) % 2 == 0) else ""
+                city_s = f_small.render((city_val[0] or "город погоды...") + caret, True, FG if city_val[0] else DIM)
+                screen.blit(city_s, (ui["entry"].x + 6, ui["entry"].y + 4))
+            elif tab_i[0] == 1:
+                lab = f_small.render(f"токенов в шаре: {balls_set[0]} (вступит после перезапуска)", True, FG)
+                screen.blit(lab, (x0, py + 76))
+                pygame.draw.rect(screen, (26, 60, 92), (x0, py + 94, x1 - x0, 4), border_radius=2)
+                k = min(1.0, max(0.0, (balls_set[0] - 120) / 580.0))
+                kx = x0 + (x1 - x0) * k
+                pygame.draw.circle(screen, FG, (int(kx), py + 96), 7)
+                ui["knobs"].append(pygame.Rect(int(kx) - 9, py + 87, 18, 18))
+                ui["tracks"].append((x0, x1, py + 96, 120, 700, 2))
+                ui["check"] = pygame.Rect(x0, py + 128, 22, 22)
+                pygame.draw.rect(screen, FG if top_on[0] else (26, 60, 92), ui["check"], 1, border_radius=4)
+                if top_on[0]:
+                    pygame.draw.rect(screen, FG, (ui["check"].x + 4, ui["check"].y + 4, 14, 14), border_radius=3)
+                chk = f_small.render("окно поверх всех", True, FG)
+                screen.blit(chk, (ui["check"].x + 30, ui["check"].y + 3))
+                hint = f_small.render("окно всегда видно поверх других программ", True, DIM)
+                screen.blit(hint, (x0, py + 164))
+            else:
+                tts_name = os.path.basename(engine) if engine else "нет (setup voice)"
+                for li, ltxt in enumerate((
+                        f"озвучка: {tts_name}",
+                        f"мозг: Ollama/{LOCAL_MODEL} → облако {POLLINATIONS_MODEL}",
+                        f"память: {len(load_memory())} факт(ов) · город: {CITY}",
+                        f"орб: {balls_n} токенов · окно: {W}x{H}")):
+                    lf = f_small.render(ltxt, True, FG if li == 0 else DIM)
+                    screen.blit(lf, (x0, py + 86 + li * 22))
+            ui["voice_btn"] = pygame.Rect(px + 16, py + ph - 38, 140, 24)
+            pygame.draw.rect(screen, (16, 46, 74), ui["voice_btn"], border_radius=7)
             vb = f_btn.render(voice_btn_lbl[0], True, FG)
             screen.blit(vb, vb.get_rect(center=ui["voice_btn"].center))
-            ui["doctor_btn"] = pygame.Rect(152, 126, 84, 22)
-            pygame.draw.rect(screen, (14, 42, 68), ui["doctor_btn"], border_radius=6)
+            ui["doctor_btn"] = pygame.Rect(px + 164, py + ph - 38, 84, 24)
+            pygame.draw.rect(screen, (16, 46, 74), ui["doctor_btn"], border_radius=7)
             db = f_btn.render("doctor", True, FG)
             screen.blit(db, db.get_rect(center=ui["doctor_btn"].center))
 
