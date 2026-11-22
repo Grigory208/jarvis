@@ -1524,16 +1524,20 @@ def gui():
 
     _gs = load_gui_settings()
     balls_n = max(120, min(700, int(os.environ.get("JARVIS_ORB_BALLS", str(int(_gs.get("balls", 400)))))))
-    W = max(340, int(os.environ.get("JARVIS_ORB_SIZE", "460")))
-    ORB_H = int(W * 0.72)
-    H = ORB_H + 108
+    W = max(760, int(os.environ.get("JARVIS_ORB_SIZE", "1120")))
+    H = max(560, int(os.environ.get("JARVIS_ORB_HEIGHT", str(int(W * 0.6)))))
+    SW = 210
+    cx = SW + (W - SW) / 2
+    cy = int(H * 0.44)
+    radius = min(W - SW, H - 130) * 0.36
+    ball_r = max(1, int(round(radius / 150.0)))
 
     pygame.init()
     pygame.display.set_caption("JARVIS")
     screen = pygame.display.set_mode((W, H))
     clock = pygame.time.Clock()
 
-    def build_bg(w, h):
+    def build_bg(w, h, gcx, gcy):
         layer = pygame.Surface((w, h))
         top, bot = (5, 14, 16), (3, 8, 11)
         for y in range(h):
@@ -1543,8 +1547,7 @@ def gui():
                    int(top[2] + (bot[2] - top[2]) * k))
             pygame.draw.line(layer, col, (0, y), (w, y))
         glow = pygame.Surface((w, h), pygame.SRCALPHA)
-        gr = int(w * 0.48)
-        gcx, gcy = w // 2, int(h * 0.40)
+        gr = int(max(w, h) * 0.52)
         for i in range(gr, 0, -1):
             k = (1.0 - i / gr) ** 2
             pygame.draw.circle(glow, (int(14 * k), int(50 * k), int(48 * k), 255), (gcx, gcy), i)
@@ -1557,7 +1560,7 @@ def gui():
         layer.blit(band, (0, 0), special_flags=pygame.BLEND_ADD)
         return layer
 
-    bg_layer = build_bg(W, H)
+    bg_layer = build_bg(W, H, int(cx), int(cy))
 
     hwnd = None
     try:
@@ -1597,6 +1600,7 @@ def gui():
     f_small = font(13)
     f_mid = font(15, True)
     f_btn = font(13, True)
+    f_logo = font(26, True)
 
     def dot(core_col, glow_col, r):
         size = r * 6
@@ -1613,29 +1617,26 @@ def gui():
         return surf
 
     NB = 12
-    orb_sprites = [dot(_mix(DEEP, CORE, b / (NB - 1)), _mix(DEEP, CORE, b / (NB - 1)), 1) for b in range(NB)]
-    lit_sprites = [dot(_mix(CORE, LITC, b / (NB - 1)), LITC, 1) for b in range(NB)]
-    spark_sprites = [dot((242, 251, 255), (170, 225, 255), 1) for b in range(NB)]
-    scan_sprites = [dot((255, 255, 255), (150, 220, 255), 2), dot((210, 240, 255), LITC, 1)]
-    inner_sprites = [dot(_mix(DEEP, CORE, b / 5), DEEP, 1) for b in range(6)]
-    rim_soft = [dot((70, 130, 195), (52, 108, 168), 2), dot((55, 115, 180), (40, 95, 155), 1)]
+    orb_sprites = [dot(_mix(DEEP, CORE, b / (NB - 1)), _mix(DEEP, CORE, b / (NB - 1)), ball_r) for b in range(NB)]
+    lit_sprites = [dot(_mix(CORE, LITC, b / (NB - 1)), LITC, ball_r) for b in range(NB)]
+    spark_sprites = [dot((242, 251, 255), (170, 225, 255), ball_r) for b in range(NB)]
+    scan_sprites = [dot((255, 255, 255), (150, 220, 255), ball_r * 2), dot((210, 240, 255), LITC, ball_r)]
+    inner_sprites = [dot(_mix(DEEP, CORE, b / 5), DEEP, ball_r) for b in range(6)]
+    rim_soft = [dot((70, 130, 195), (52, 108, 168), ball_r * 2), dot((55, 115, 180), (40, 95, 155), ball_r)]
     core_halo = dot((238, 250, 255), CORE, 14)
     core_haze = dot((150, 210, 255), (55, 115, 185), 34)
-    halo_layer = pygame.Surface((W, W), pygame.SRCALPHA)
-    c0 = W // 2
+    HG = int(radius * 3.2)
+    halo_layer = pygame.Surface((HG, HG), pygame.SRCALPHA)
+    c0 = HG // 2
     for i in range(c0, 0, -1):
         k = 1.0 - i / c0
         pygame.draw.circle(halo_layer, (int(26 * k ** 2.2), int(62 * k ** 2.2), int(106 * k ** 2.2), 255),
                            (c0, c0), i)
-    big_glow = pygame.Surface((W, W), pygame.SRCALPHA)
+    big_glow = pygame.Surface((HG, HG), pygame.SRCALPHA)
     for i in range(c0, 0, -1):
         k = 1.0 - i / c0
         pygame.draw.circle(big_glow, (int(30 * k ** 1.7), int(72 * k ** 1.7), int(120 * k ** 1.7), 255),
                            (c0, c0), i)
-
-    cx = W / 2
-    cy = ORB_H / 2 + 10
-    radius = W * 0.33
 
     def form_fib(n):
         g = math.pi * (3 - 5 ** 0.5)
@@ -1926,34 +1927,30 @@ def gui():
                 drag[0] = None
             elif ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
                 mx, my = ev.pos
-                if ui.get("gear") and ui["gear"].collidepoint(mx, my):
-                    panel_visible[0] = not panel_visible[0]
-                elif ui.get("chips") and any(r.collidepoint(mx, my) for r in ui["chips"]):
-                    for r, t in zip(ui["chips"], chip_labels):
-                        if r.collidepoint(mx, my):
-                            entry_focus[0] = False
-                            send(t)
-                elif ui.get("help_sheet") and ui["help_sheet"].collidepoint(mx, my):
-                    help_visible[0] = False
-                    entry_focus[0] = False
+                if ui.get("voice_btn") and ui["voice_btn"].collidepoint(mx, my):
+                    run_voice()
+                elif ui.get("doctor_btn") and ui["doctor_btn"].collidepoint(mx, my):
+                    threading.Thread(target=doctor, daemon=True).start()
+                elif ui.get("sbn") and any(sr.collidepoint(mx, my) for sr in ui["sbn"]):
+                    for i, sr in enumerate(ui["sbn"]):
+                        if sr.collidepoint(mx, my):
+                            panel_visible[0] = True
+                            tab_i[0] = i
+                            entry_focus[0] = ""
+                            form_msg[0] = ""
+                            drag[0] = None
                 elif ui.get("combo") and ui["combo"].collidepoint(mx, my):
                     help_visible[0] = not help_visible[0]
+                    panel_visible[0] = False
                 elif ui.get("howb") and ui["howb"].collidepoint(mx, my):
                     help_visible[0] = not help_visible[0]
+                    panel_visible[0] = False
                 elif panel_visible[0]:
                     hit = False
                     if ui.get("close") and ui["close"].collidepoint(mx, my):
                         panel_visible[0] = False
                         entry_focus[0] = ""
                         hit = True
-                    if not hit:
-                        for i, sr in enumerate(ui.get("sections", [])):
-                            if sr.collidepoint(mx, my):
-                                tab_i[0] = i
-                                entry_focus[0] = ""
-                                drag[0] = None
-                                form_msg[0] = ""
-                                hit = True
                     if not hit:
                         for i, kr in enumerate(ui.get("knobs", [])):
                             if kr.collidepoint(mx, my):
@@ -2009,12 +2006,6 @@ def gui():
                                     save_custom_commands(cmds)
                                 form_msg[0] = ""
                                 hit = True
-                    if not hit and ui.get("voice_btn") and ui["voice_btn"].collidepoint(mx, my):
-                        run_voice()
-                        hit = True
-                    if not hit and ui.get("doctor_btn") and ui["doctor_btn"].collidepoint(mx, my):
-                        threading.Thread(target=doctor, daemon=True).start()
-                        hit = True
                     if not hit and ui.get("sheet"):
                         if ui["sheet"].collidepoint(mx, my):
                             entry_focus[0] = ""
@@ -2022,6 +2013,17 @@ def gui():
                             panel_visible[0] = False
                             entry_focus[0] = ""
                             drag[0] = None
+                elif ((mx - cx) ** 2 + (my - cy) ** 2) <= (radius * 1.06) ** 2:
+                    panel_visible[0] = True
+                    entry_focus[0] = ""
+                elif ui.get("chips") and any(r.collidepoint(mx, my) for r in ui["chips"]):
+                    for r, lbl in zip(ui["chips"], chip_labels):
+                        if r.collidepoint(mx, my):
+                            entry_focus[0] = ""
+                            send(lbl)
+                elif ui.get("help_sheet") and ui["help_sheet"].collidepoint(mx, my):
+                    help_visible[0] = False
+                    entry_focus[0] = ""
         if drag[0] is not None and ui.get("tracks"):
             try:
                 tx0, tx1, _ty, lo, hi, tgt = ui["tracks"][drag[0]]
@@ -2206,43 +2208,61 @@ def gui():
         hdr = f_small.render("Попробуй сказать", True, DIM)
         screen.blit(hdr, hdr.get_rect(center=(int(cx), H - 48)))
 
-        ui["gear"] = pygame.Rect(W - 30, 8, 22, 22)
-        gear_s = f_btn.render("⚙", True, FG if panel_visible[0] else DIM)
-        screen.blit(gear_s, (W - 26, 8))
-
+        sb = pygame.Surface((SW, H), pygame.SRCALPHA)
+        sb.fill((8, 20, 34, 235))
+        screen.blit(sb, (0, 0))
+        pygame.draw.line(screen, (52, 110, 160), (SW - 1, 0), (SW - 1, H))
+        screen.blit(f_logo.render("JARVIS", True, LITC), (20, 14))
         combo_s = f_small.render("Джарвис  ▾", True, FG)
-        cr = combo_s.get_rect(topleft=(14, 12))
+        cr = combo_s.get_rect(topleft=(20, 66))
         box = cr.inflate(18, 10)
         pygame.draw.rect(screen, (10, 28, 46), box, border_radius=5)
         pygame.draw.rect(screen, (30, 70, 105), box, 1, border_radius=5)
         screen.blit(combo_s, cr)
         ui["combo"] = box
+        hbox = pygame.Rect(16, 100, SW - 32, 28)
+        pygame.draw.rect(screen, (10, 28, 46), hbox, border_radius=7)
+        pygame.draw.rect(screen, (30, 70, 105), hbox, 1, border_radius=7)
         how_s = f_small.render("Как начать", True, FG)
-        hr = how_s.get_rect(topleft=(box.right + 10, 17))
-        hbox = hr.inflate(16, 10)
-        pygame.draw.rect(screen, (10, 28, 46), hbox, border_radius=5)
-        pygame.draw.rect(screen, (30, 70, 105), hbox, 1, border_radius=5)
-        screen.blit(how_s, hr)
+        screen.blit(how_s, how_s.get_rect(center=hbox.center))
         ui["howb"] = hbox
+        sb_t = f_small.render("НАСТРОЙКИ", True, DIM)
+        screen.blit(sb_t, (20, 146))
+        ui["sbn"] = []
+        for si, sname in enumerate(("Голос", "Окно", "Команды", "Инфо")):
+            sr = pygame.Rect(16, 172 + si * 34, SW - 32, 28)
+            ui["sbn"].append(sr)
+            sb_on = panel_visible[0] and tab_i[0] == si
+            pygame.draw.rect(screen, (26, 64, 100) if sb_on else (13, 32, 52), sr, border_radius=7)
+            sf2 = f_small.render(sname, True, FG if sb_on else DIM)
+            screen.blit(sf2, (sr.x + 12, sr.y + 7))
+        ui["voice_btn"] = pygame.Rect(16, H - 96, SW - 32, 28)
+        pygame.draw.rect(screen, (16, 46, 74), ui["voice_btn"], border_radius=7)
+        vb = f_btn.render(voice_btn_lbl[0], True, FG)
+        screen.blit(vb, vb.get_rect(center=ui["voice_btn"].center))
+        ui["doctor_btn"] = pygame.Rect(16, H - 60, SW - 32, 28)
+        pygame.draw.rect(screen, (16, 46, 74), ui["doctor_btn"], border_radius=7)
+        db = f_btn.render("doctor", True, FG)
+        screen.blit(db, db.get_rect(center=ui["doctor_btn"].center))
 
         if help_visible[0]:
-            hs = pygame.Surface((W - 60, 86), pygame.SRCALPHA)
+            hs = pygame.Surface((W - SW - 60, 86), pygame.SRCALPHA)
             hs.fill((8, 20, 34, 224))
-            screen.blit(hs, (30, 40))
-            ui["help_sheet"] = pygame.Rect(30, 40, W - 60, 86)
+            screen.blit(hs, (SW + 30, 40))
+            ui["help_sheet"] = pygame.Rect(SW + 30, 40, W - SW - 60, 86)
             for li, ltxt in enumerate((
-                    "1. жми 🎤 (в ⚙) и говори: «джарвис, + команда»",
-                    "2. или кликай фразы внизу — выполняется сразу",
-                    "3. ⚙ — настройки: голос, окно, свои команды, инфо")):
+                    "1. нажми на шар — откроется панель настроек поверх него",
+                    "2. 🎤 внизу слева — голосовой режим, doctor — проверка системы",
+                    "3. свои команды — раздел «Команды»: работают сразу, без перезапуска")):
                 lf = f_small.render(ltxt, True, FG)
                 screen.blit(lf, (42, 52 + li * 22))
 
         if panel_visible[0]:
-            pw = min(W - 24, 520)
-            ph = min(H - 24, 288)
-            px, py = (W - pw) // 2, max(6, (H - ph) // 2)
+            pw = int(radius * 2.6)
+            ph = int(radius * 2.6)
+            px, py = int(cx - pw / 2), max(6, int(cy - ph / 2))
             sheet = pygame.Surface((pw, ph), pygame.SRCALPHA)
-            sheet.fill((9, 22, 36, 242))
+            sheet.fill((9, 22, 36, 246))
             screen.blit(sheet, (px, py))
             ui["sheet"] = pygame.Rect(px, py, pw, ph)
             pygame.draw.rect(screen, (52, 110, 160), ui["sheet"], 1, border_radius=12)
@@ -2253,65 +2273,55 @@ def gui():
             ui.pop("check", None)
             ui.pop("typebtn", None)
             ui.pop("addbtn", None)
-            SW = 128
-            sh = f_small.render("НАСТРОЙКИ", True, DIM)
-            screen.blit(sh, (px + 12, py + 14))
-            ui["sections"] = []
-            for si, sname in enumerate(("Голос", "Окно", "Команды", "Инфо")):
-                sr = pygame.Rect(px + 10, py + 46 + si * 32, SW - 20, 27)
-                ui["sections"].append(sr)
-                pygame.draw.rect(screen, (26, 64, 100) if tab_i[0] == si else (13, 32, 52), sr, border_radius=7)
-                sf = f_small.render(sname, True, FG if tab_i[0] == si else DIM)
-                screen.blit(sf, (sr.x + 10, sr.y + 6))
-            ui["close"] = pygame.Rect(px + pw - 30, py + 10, 22, 22)
+            x0, x1 = px + 24, px + pw - 24
+            top_m = f_mid.render(("Голос", "Окно", "Команды", "Инфо")[tab_i[0]], True, (225, 245, 255))
+            screen.blit(top_m, (x0, py + 16))
+            ui["close"] = pygame.Rect(px + pw - 34, py + 12, 22, 22)
             hov = ui["close"].collidepoint(pygame.mouse.get_pos())
             pygame.draw.rect(screen, (170, 70, 70) if hov else (30, 66, 100), ui["close"], border_radius=6)
             cxs = f_small.render("✕", True, (255, 220, 220) if hov else FG)
             screen.blit(cxs, cxs.get_rect(center=ui["close"].center))
-            x0, x1 = px + SW + 12, px + pw - 18
-            top_m = f_mid.render(("Голос", "Окно", "Команды", "Инфо")[tab_i[0]], True, (225, 245, 255))
-            screen.blit(top_m, (x0, py + 14))
             if tab_i[0] == 0:
                 for label, val, lo, hi, y, tgt in (
-                        (f"скорость речи  {int(RATE)}", int(RATE), 20, 200, py + 62, 0),
-                        (f"громкость  {int(VOLUME)}", int(VOLUME), 0, 200, py + 98, 1)):
+                        (f"скорость речи  {int(RATE)}", int(RATE), 20, 200, py + 82, 0),
+                        (f"громкость  {int(VOLUME)}", int(VOLUME), 0, 200, py + 128, 1)):
                     lab = f_small.render(label, True, FG)
-                    screen.blit(lab, (x0, y - 18))
+                    screen.blit(lab, (x0, y - 20))
                     pygame.draw.rect(screen, (26, 60, 92), (x0, y - 2, x1 - x0, 4), border_radius=2)
                     k = min(1.0, max(0.0, (val - lo) / max(1, hi - lo)))
                     kx = x0 + (x1 - x0) * k
                     pygame.draw.circle(screen, FG, (int(kx), y), 7)
                     ui["knobs"].append(pygame.Rect(int(kx) - 9, y - 9, 18, 18))
                     ui["tracks"].append((x0, x1, y, lo, hi, tgt))
-                er = pygame.Rect(x0, py + 128, 170, 22)
+                er = pygame.Rect(x0, py + 170, 200, 24)
                 ui["entries"].append(("city", er))
                 draw_entry(er, city_val[0], "город погоды...", entry_focus[0] == "city")
                 hint = f_small.render("город для команды «погода»", True, DIM)
-                screen.blit(hint, (x0 + 178, py + 133))
+                screen.blit(hint, (x0 + 212, py + 176))
             elif tab_i[0] == 1:
                 lab = f_small.render(f"токенов в шаре: {balls_set[0]} (вступит после перезапуска)", True, FG)
-                screen.blit(lab, (x0, py + 44))
-                pygame.draw.rect(screen, (26, 60, 92), (x0, py + 62, x1 - x0, 4), border_radius=2)
+                screen.blit(lab, (x0, py + 62))
+                pygame.draw.rect(screen, (26, 60, 92), (x0, py + 82, x1 - x0, 4), border_radius=2)
                 k = min(1.0, max(0.0, (balls_set[0] - 120) / 580.0))
                 kx = x0 + (x1 - x0) * k
-                pygame.draw.circle(screen, FG, (int(kx), py + 64), 7)
-                ui["knobs"].append(pygame.Rect(int(kx) - 9, py + 55, 18, 18))
-                ui["tracks"].append((x0, x1, py + 64, 120, 700, 2))
-                ui["check"] = pygame.Rect(x0, py + 100, 22, 22)
+                pygame.draw.circle(screen, FG, (int(kx), py + 84), 7)
+                ui["knobs"].append(pygame.Rect(int(kx) - 9, py + 75, 18, 18))
+                ui["tracks"].append((x0, x1, py + 84, 120, 700, 2))
+                ui["check"] = pygame.Rect(x0, py + 128, 22, 22)
                 pygame.draw.rect(screen, FG if top_on[0] else (26, 60, 92), ui["check"], 1, border_radius=4)
                 if top_on[0]:
                     pygame.draw.rect(screen, FG, (ui["check"].x + 4, ui["check"].y + 4, 14, 14), border_radius=3)
                 chk = f_small.render("окно поверх всех", True, FG)
                 screen.blit(chk, (ui["check"].x + 30, ui["check"].y + 3))
                 hint = f_small.render("окно всегда видно поверх других программ", True, DIM)
-                screen.blit(hint, (x0, py + 134))
+                screen.blit(hint, (x0, py + 166))
             elif tab_i[0] == 2:
                 y_form = py + ph - 148
-                max_rows = max(0, int((y_form - (py + 40)) // 20))
+                max_rows = max(0, int((y_form - (py + 48)) // 22))
                 visible = cmds[-max_rows:] if max_rows else []
                 base_idx = len(cmds) - len(visible)
                 for ri, c in enumerate(visible):
-                    ry = py + 42 + ri * 20
+                    ry = py + 50 + ri * 22
                     typ_lbl = CUSTOM_TYPE_LABELS.get(c.get("type"), "?")
                     txt = f"«{c.get('phrase', '')}» → {typ_lbl}: {c.get('param', '')}"
                     while txt and f_small.size(txt)[0] > (x1 - x0) - 30:
@@ -2325,50 +2335,43 @@ def gui():
                     screen.blit(dxr, dxr.get_rect(center=dr.center))
                 if not cmds:
                     nf = f_small.render("пока нет своих команд — создай первую ниже", True, DIM)
-                    screen.blit(nf, (x0, py + 46))
+                    screen.blit(nf, (x0, py + 52))
                 lab = f_small.render("новая команда — фразы через запятую:", True, DIM)
                 screen.blit(lab, (x0, y_form))
-                pr_ = pygame.Rect(x0, y_form + 14, x1 - x0, 22)
+                pr_ = pygame.Rect(x0, y_form + 16, x1 - x0, 24)
                 ui["entries"].append(("phrase", pr_))
                 draw_entry(pr_, new_phrase[0], "фраза, например: включи музыку", entry_focus[0] == "phrase")
-                prm = pygame.Rect(x0, y_form + 40, x1 - x0 - 126, 22)
+                prm = pygame.Rect(x0, y_form + 48, x1 - x0 - 140, 24)
                 ui["entries"].append(("param", prm))
                 placeholders = {"site": "https://youtube.com", "app": "chrome",
                                 "say": "что озвучить", "cmd": "время"}
                 draw_entry(prm, new_param[0],
                            placeholders[CUSTOM_TYPES[new_type[0]]], entry_focus[0] == "param")
-                ty_ = pygame.Rect(x1 - 118, y_form + 40, 118, 22)
+                ty_ = pygame.Rect(x1 - 132, y_form + 48, 132, 24)
                 ui["typebtn"] = ty_
                 pygame.draw.rect(screen, (16, 46, 74), ty_, border_radius=7)
                 tb = f_btn.render("тип: " + CUSTOM_TYPE_LABELS[CUSTOM_TYPES[new_type[0]]], True, FG)
                 screen.blit(tb, tb.get_rect(center=ty_.center))
-                ab = pygame.Rect(x1 - 118, y_form + 68, 118, 22)
+                ab = pygame.Rect(x1 - 132, y_form + 80, 132, 24)
                 ui["addbtn"] = ab
                 pygame.draw.rect(screen, (20, 62, 96), ab, border_radius=7)
                 abf = f_btn.render("добавить", True, LITC)
                 screen.blit(abf, abf.get_rect(center=ab.center))
                 if form_msg[0]:
                     mf = f_small.render(form_msg[0], True, FG)
-                    screen.blit(mf, (x0, y_form + 73))
+                    screen.blit(mf, (x0, y_form + 85))
                 hf = f_small.render("создаёшь здесь — Джарвис слышит сразу, без перезапуска", True, DIM)
-                screen.blit(hf, (x0 + 126, y_form + 73))
+                screen.blit(hf, (x0 + 136, y_form + 85))
             else:
                 tts_name = os.path.basename(engine) if engine else "нет (setup voice)"
                 for li, ltxt in enumerate((
                         f"озвучка: {tts_name}",
                         f"мозг: Ollama/{LOCAL_MODEL} → облако {POLLINATIONS_MODEL}",
                         f"память: {len(load_memory())} факт(ов) · город: {CITY}",
-                        f"своих команд: {len(cmds)} · орб: {balls_n} токенов · окно: {W}x{H}")):
+                        f"своих команд: {len(cmds)} · орб: {balls_n} токенов",
+                        f"окно: {W}x{H} · шар: ~{int(radius * 2)} px")):
                     lf = f_small.render(ltxt, True, FG if li == 0 else DIM)
-                    screen.blit(lf, (x0, py + 56 + li * 24))
-            ui["voice_btn"] = pygame.Rect(px + 16, py + ph - 38, 140, 24)
-            pygame.draw.rect(screen, (16, 46, 74), ui["voice_btn"], border_radius=7)
-            vb = f_btn.render(voice_btn_lbl[0], True, FG)
-            screen.blit(vb, vb.get_rect(center=ui["voice_btn"].center))
-            ui["doctor_btn"] = pygame.Rect(px + 164, py + ph - 38, 84, 24)
-            pygame.draw.rect(screen, (16, 46, 74), ui["doctor_btn"], border_radius=7)
-            db = f_btn.render("doctor", True, FG)
-            screen.blit(db, db.get_rect(center=ui["doctor_btn"].center))
+                    screen.blit(lf, (x0, py + 70 + li * 28))
 
         pygame.display.flip()
         clock.tick(40)
