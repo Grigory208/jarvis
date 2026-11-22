@@ -1403,7 +1403,7 @@ VOICE_STOP = False
 GUI_SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gui_settings.json")
 OVERLAY_STOP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hud.stop")
 HUD_LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hud.log")
-APP_VERSION = "v16f"
+APP_VERSION = "v17-tk"
 
 
 def _hud_log(msg):
@@ -2681,6 +2681,198 @@ def hud_overlay():
         clock.tick(30)
 
 
+
+def hud_overlay_tk():
+    """
+    Голограмма на tkinter: родная виндовая отрисовка (SDL на некоторых машинах
+    отдаёт чёрное окно). Панель без рамки, поверх всего: мини-орб + чат + ввод.
+    """
+    try:
+        import tkinter as tk
+    except (ImportError, OSError) as exc:
+        _hud_log(f"tk недоступен ({exc}) — fallback на pygame-оверлей")
+        hud_overlay()
+        return
+
+    PW, PH = 380, 500
+    TC = "#010203"
+    PANEL, EDGE = "#0a1624", "#346ea0"
+    FG, DIM, GOLD = "#aadcf7", "#6ea0c3", "#ffb040"
+    root = tk.Tk()
+    root.title("JARVIS")
+    root.overrideredirect(True)
+    root.attributes("-topmost", True)
+    try:
+        root.attributes("-transparentcolor", TC)
+    except tk.TclError:
+        pass
+    root.configure(bg=TC)
+    dw, dh = root.winfo_screenwidth(), root.winfo_screenheight()
+    root.geometry(f"{PW}x{PH}+{dw - PW - 18}+{dh - PH - 18}")
+
+    canvas = tk.Canvas(root, width=PW, height=PH, bg=TC, highlightthickness=0)
+    canvas.place(x=0, y=0)
+
+    def rounded(x0, y0, x1, y1, r, color):
+        canvas.create_rectangle(x0 + r, y0, x1 - r, y1, fill=color, outline="")
+        canvas.create_rectangle(x0, y0 + r, x1, y1 - r, fill=color, outline="")
+        for cx, cy in ((x0 + r, y0 + r), (x1 - r, y0 + r), (x0 + r, y1 - r), (x1 - r, y1 - r)):
+            canvas.create_oval(cx - r, cy - r, cx + r, cy + r, fill=color, outline="")
+
+    rounded(0, 0, PW, PH, 14, EDGE)
+    rounded(1, 1, PW - 1, PH - 1, 13, PANEL)
+    canvas.create_text(14, 20, text="JARVIS", fill=GOLD, anchor="w",
+                       font=("Segoe UI", 11, "bold"))
+    canvas.create_text(104, 21, text=f"голограмма · чат · {APP_VERSION}",
+                       fill=DIM, anchor="w", font=("Segoe UI", 9))
+    canvas.create_text(PW - 26, 24, text="✕", fill="#ff9c9c", font=("Segoe UI", 10))
+
+    ocx, ocy, orr = PW // 2, 84, 42
+    canvas.create_oval(ocx - orr - 5, ocy - orr - 5, ocx + orr + 5, ocy + orr + 5,
+                       outline="#12304f", fill="")
+
+    NP = 40
+    dots = []
+    for i in range(NP):
+        yy = 1.0 - 2.0 * i / (NP - 1)
+        rr2 = math.sqrt(max(0.0, 1 - yy * yy))
+        dots.append((yy, rr2, math.pi * (3 - math.sqrt(5)) * i, i))
+    dot_ids = [canvas.create_oval(-5, -5, -4, -4, fill=FG, outline="") for _ in range(NP)]
+    core_id = canvas.create_oval(ocx - 7, ocy - 7, ocx + 7, ocy + 7,
+                                 fill="#e1f5ff", outline="")
+
+    chat_box = tk.Text(root, bg=PANEL, fg=FG, relief="flat", wrap="word",
+                       font=("Segoe UI", 10), state="disabled",
+                       selectbackground="#12304f")
+    chat_box.place(x=12, y=150, width=PW - 24, height=PH - 224)
+    status = tk.Label(root, text="", bg=PANEL, fg=GOLD, font=("Segoe UI", 9))
+    status.place(x=14, y=PH - 70)
+    entry = tk.Entry(root, bg="#06101c", fg=FG, insertbackground=FG,
+                     relief="flat", font=("Segoe UI", 10))
+    entry.place(x=12, y=PH - 44, width=PW - 24, height=26)
+    entry.focus_set()
+
+    state = ["idle"]
+    busy = [False]
+
+    def chat_add(who, txt):
+        def _do():
+            chat_box.configure(state="normal")
+            tag = "you" if who == "you" else "j"
+            chat_box.tag_configure("you", foreground=GOLD)
+            chat_box.tag_configure("j", foreground=FG)
+            chat_box.insert("end", ("ВЫ: " if who == "you" else "J: ") + txt + "\n", tag)
+            chat_box.see("end")
+            chat_box.configure(state="disabled")
+        root.after(0, _do)
+
+    def worker(q):
+        busy[0] = True
+        state[0] = "think"
+        root.after(0, lambda: status.configure(text="обрабатываю, сэр…"))
+        try:
+            engine = find_tts()
+            reply, _hist = respond(q, [], engine)
+            if reply:
+                chat_add("jarvis", reply)
+                state[0] = "speak"
+                root.after(0, lambda: status.configure(text="говорю…"))
+                if engine:
+                    try:
+                        speak(engine, reply)
+                    except Exception:
+                        pass
+            else:
+                chat_add("jarvis", "не смог выполнить, сэр")
+        except Exception as exc:
+            chat_add("jarvis", f"ошибка: {exc}")
+        busy[0] = False
+        state[0] = "idle"
+        root.after(0, lambda: status.configure(text=""))
+
+    def send(event=None):
+        q = entry.get().strip()
+        entry.delete(0, "end")
+        if not q:
+            return "break"
+        if busy[0]:
+            chat_add("jarvis", "секунду, сэр…")
+            return "break"
+        chat_add("you", q)
+        threading.Thread(target=worker, args=(q,), daemon=True).start()
+        return "break"
+
+    entry.bind("<Return>", send)
+
+    def on_click(ev):
+        w = (ev.widget.winfo_name() or "").lower()
+        if ev.x > PW - 40 and ev.y < 36:
+            root.destroy()
+        else:
+            entry.focus_set()
+    canvas.bind("<Button-1>", on_click)
+
+    t0 = time.perf_counter()
+
+    def frame():
+        t = time.perf_counter() - t0
+        sp = 5.0 if state[0] == "think" else 2.0
+        for yy, rr2, base, i in dots:
+            phi = base + t * sp
+            xo = math.cos(phi) * rr2 * orr
+            yo = yy * orr * 0.92
+            shade = 0.5 + 0.5 * (1 - math.cos(phi)) / 2
+            gold = (i % 6 == 0 and state[0] == "speak")
+            if gold:
+                col = GOLD
+            else:
+                col = f"#{min(255, int(150 * shade) + 40):02x}" \
+                      f"{min(255, int(210 * shade) + 40):02x}" \
+                      f"{min(255, int(255 * shade) + 30):02x}"
+            canvas.coords(dot_ids[i], ocx + xo - 2, ocy + yo - 2, ocx + xo + 2, ocy + yo + 2)
+            canvas.itemconfigure(dot_ids[i], fill=col)
+        r_core = 9 if state[0] == "speak" else 7
+        canvas.coords(core_id, ocx - r_core, ocy - r_core, ocx + r_core, ocy + r_core)
+        canvas.itemconfigure(core_id,
+                             fill=GOLD if state[0] == "think" else "#e1f5ff")
+        root.after(50, frame)
+
+    stop_flag = [False]
+    thread_id = [0]
+
+    def hotkey_loop():
+        import ctypes
+        import ctypes.wintypes as wt
+        u = ctypes.windll.user32
+        thread_id[0] = ctypes.windll.kernel32.GetCurrentThreadId()
+        if u.RegisterHotKey(None, 1, 0x0001 | 0x0002, 0x4A):
+            msg = wt.MSG()
+            while u.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+                if msg.message == 0x0312:
+                    stop_flag[0] = True
+                    break
+            u.UnregisterHotKey(None, 1)
+
+    threading.Thread(target=hotkey_loop, daemon=True).start()
+
+    def poll():
+        if stop_flag[0] or os.path.exists(OVERLAY_STOP_FILE):
+            try:
+                os.remove(OVERLAY_STOP_FILE)
+            except OSError:
+                pass
+            if thread_id[0]:
+                ctypes.windll.user32.PostThreadMessageW(thread_id[0], 0x0012, 0, 0)
+            root.destroy()
+            return
+        root.after(400, poll)
+
+    poll()
+    frame()
+    _hud_log(f"tk overlay shown at +{dw - PW - 18}+{dh - PH - 18}")
+    root.mainloop()
+
+
 def _cleanup_hud_on_exit():
     try:
         with open(OVERLAY_STOP_FILE, "w", encoding="utf-8") as fh:
@@ -2981,8 +3173,10 @@ if __name__ == "__main__":
         elif len(sys.argv) > 1 and sys.argv[1].lower() in ("doctor", "diag", "доктор"):
             doctor()
         elif len(sys.argv) > 1 and sys.argv[1].lower() in ("hud", "голограмма", "holo"):
+            use_tk = (sys.platform.startswith("win")
+                      and os.environ.get("JARVIS_HUD_BACKEND", "tk").lower() == "tk")
             try:
-                hud_overlay()
+                hud_overlay_tk() if use_tk else hud_overlay()
             except SystemExit:
                 raise
             except Exception:
