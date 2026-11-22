@@ -1403,7 +1403,7 @@ VOICE_STOP = False
 GUI_SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gui_settings.json")
 OVERLAY_STOP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hud.stop")
 HUD_LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hud.log")
-APP_VERSION = "v16d"
+APP_VERSION = "v16e"
 
 
 def _hud_log(msg):
@@ -2498,10 +2498,6 @@ def hud_overlay():
             u32.SetWindowLongW(hwnd, -20, u32.GetWindowLongW(hwnd, -20)
                                | WS_EX_TOPMOST | WS_EX_TOOLWINDOW)
             _hud_log(f"extstyle set, hwnd={hwnd}")
-            ctypes.windll.gdi32.CreateRoundRectRgn.restype = ctypes.c_void_p
-            rgn = ctypes.windll.gdi32.CreateRoundRectRgn(0, 0, PW + 1, PH + 1, 24, 24)
-            u32.SetWindowRgn(hwnd, ctypes.c_void_p(rgn), 1)
-            _hud_log(f"region set, rgn={rgn}")
             u32.MoveWindow(hwnd, DW - PW - 18, DH - PH - 18, PW, PH, 0)
             u32.ShowWindow(hwnd, 4)
             u32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)
@@ -2629,8 +2625,8 @@ def hud_overlay():
                 elif ev.unicode and ev.unicode.isprintable():
                     box_txt[0] += ev.unicode
         screen.fill((12, 27, 44))
-        pygame.draw.rect(screen, (10, 22, 36), panel, border_radius=12)
-        pygame.draw.rect(screen, (52, 110, 160), panel, 1, border_radius=12)
+        pygame.draw.rect(screen, (10, 22, 36), panel)
+        pygame.draw.rect(screen, (52, 110, 160), panel, 1)
         ocx, ocy, orr = panel.centerx, 76, 44
         pygame.draw.circle(screen, (18, 48, 78), (ocx, ocy), orr + 6, 1)
         np = 56
