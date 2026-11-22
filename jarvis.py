@@ -1403,7 +1403,7 @@ VOICE_STOP = False
 GUI_SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gui_settings.json")
 OVERLAY_STOP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hud.stop")
 HUD_LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hud.log")
-APP_VERSION = "v20-tk"
+APP_VERSION = "v20b-tk"
 
 
 def _hud_log(msg):
@@ -2812,6 +2812,8 @@ def hud_overlay_tk():
         w, h = sizes
         r_ids.extend(rounded(0, 0, w, h, 14, EDGE))
         r_ids.extend(rounded(1, 1, w - 1, h - 1, 13, PANEL))
+        for iid in r_ids:
+            canvas.tag_lower(iid)
         canvas.coords(close_id, w - 26, 24)
         chat_box.place(x=12, y=150, width=sizes[0] - 24, height=sizes[1] - 224)
         status.place(x=14, y=sizes[1] - 70)
