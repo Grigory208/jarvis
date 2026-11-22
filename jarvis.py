@@ -2476,9 +2476,7 @@ def hud_overlay():
     transparent = sys.platform.startswith("win")
     PW, PH = 380, 500
     screen = pygame.display.set_mode((PW, PH), pygame.NOFRAME if transparent else 0)
-    KEY = (1, 2, 3)
     pygame.display.set_caption("JARVIS")
-    ok_trans = False
     hwnd = u32 = None
     hotkey_on = False
     if transparent:
@@ -2488,11 +2486,13 @@ def hud_overlay():
             WS_EX_LAYERED, WS_EX_TOPMOST, WS_EX_TOOLWINDOW = 0x00080000, 0x00000008, 0x00000080
             u32.SetWindowLongW(hwnd, -20, u32.GetWindowLongW(hwnd, -20)
                                | WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW)
-            u32.SetLayeredWindowAttributes(hwnd, KEY[0] | (KEY[1] << 8) | (KEY[2] << 16), 0, 0x00000001)
+            u32.SetLayeredWindowAttributes(hwnd, 0, 235, 0x00000002)
+            ctypes.windll.gdi32.CreateRoundRectRgn.restype = ctypes.c_void_p
+            rgn = ctypes.windll.gdi32.CreateRoundRectRgn(0, 0, PW + 1, PH + 1, 24, 24)
+            u32.SetWindowRgn(hwnd, ctypes.c_void_p(rgn), 1)
             u32.MoveWindow(hwnd, DW - PW - 18, DH - PH - 18, PW, PH, 0)
             u32.ShowWindow(hwnd, 4)
             u32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)
-            ok_trans = True
         except Exception:
             hwnd = u32 = None
         try:
@@ -2582,7 +2582,7 @@ def hud_overlay():
                 pass
             return
         t = time.perf_counter() - t0
-        if ok_trans and t - last_top > 5.0 and u32 is not None:
+        if u32 is not None and t - last_top > 2.0:
             try:
                 u32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)
             except Exception:
@@ -2608,7 +2608,7 @@ def hud_overlay():
                         send(q)
                 elif ev.unicode and ev.unicode.isprintable():
                     box_txt[0] += ev.unicode
-        screen.fill(KEY if ok_trans else (3, 9, 18))
+        screen.fill((12, 27, 44))
         pygame.draw.rect(screen, (10, 22, 36), panel, border_radius=12)
         pygame.draw.rect(screen, (52, 110, 160), panel, 1, border_radius=12)
         ocx, ocy, orr = panel.centerx, 76, 44
