@@ -1403,7 +1403,7 @@ VOICE_STOP = False
 GUI_SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gui_settings.json")
 OVERLAY_STOP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hud.stop")
 HUD_LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hud.log")
-APP_VERSION = "v16e"
+APP_VERSION = "v16f"
 
 
 def _hud_log(msg):
@@ -2487,6 +2487,7 @@ def hud_overlay():
     PW, PH = 380, 500
     screen = pygame.display.set_mode((PW, PH), pygame.NOFRAME if transparent else 0)
     pygame.display.set_caption("JARVIS")
+    ok_trans = False
     hwnd = u32 = None
     hotkey_on = False
     if transparent:
@@ -2494,14 +2495,16 @@ def hud_overlay():
         try:
             hwnd = pygame.display.get_wm_info()["window"]
             u32 = ctypes.windll.user32
-            WS_EX_TOPMOST, WS_EX_TOOLWINDOW = 0x00000008, 0x00000080
+            WS_EX_LAYERED, WS_EX_TOPMOST, WS_EX_TOOLWINDOW = 0x00080000, 0x00000008, 0x00000080
             u32.SetWindowLongW(hwnd, -20, u32.GetWindowLongW(hwnd, -20)
-                               | WS_EX_TOPMOST | WS_EX_TOOLWINDOW)
-            _hud_log(f"extstyle set, hwnd={hwnd}")
+                               | WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW)
+            u32.SetLayeredWindowAttributes(hwnd, 0x00030201, 0, 0x00000001)
+            _hud_log(f"extstyle+colorkey set, hwnd={hwnd}")
             u32.MoveWindow(hwnd, DW - PW - 18, DH - PH - 18, PW, PH, 0)
             u32.ShowWindow(hwnd, 4)
             u32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)
-            _hud_log(f"move+topmost set, expect x={DW - PW - 18} y={DH - PH - 18}")
+            ok_trans = True
+            _hud_log(f"move+topmost+colorkey ok, expect x={DW - PW - 18} y={DH - PH - 18}")
         except Exception:
             _hud_log("overlay setup FAILED:\n" + traceback.format_exc())
             hwnd = u32 = None
@@ -2624,9 +2627,9 @@ def hud_overlay():
                         send(q)
                 elif ev.unicode and ev.unicode.isprintable():
                     box_txt[0] += ev.unicode
-        screen.fill((12, 27, 44))
-        pygame.draw.rect(screen, (10, 22, 36), panel)
-        pygame.draw.rect(screen, (52, 110, 160), panel, 1)
+        screen.fill((1, 2, 3) if ok_trans else (12, 27, 44))
+        pygame.draw.rect(screen, (10, 22, 36), panel, border_radius=12)
+        pygame.draw.rect(screen, (52, 110, 160), panel, 1, border_radius=12)
         ocx, ocy, orr = panel.centerx, 76, 44
         pygame.draw.circle(screen, (18, 48, 78), (ocx, ocy), orr + 6, 1)
         np = 56
