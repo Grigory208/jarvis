@@ -1513,7 +1513,28 @@ def gui():
                 out.append((i, i + 1))
         return out
 
-    FORMS = [form_fib(balls_n), form_rings(balls_n), form_spiral(balls_n)]
+    def form_earth(n):
+        out = []
+        blobs = [(52, -100, 14, 22), (-14, -60, 12, 15), (50, 16, 9, 14),
+                 (8, 20, 14, 16), (42, 88, 15, 26), (-25, 134, 8, 11),
+                 (68, 40, 8, 16), (-72, 0, 6, 180)]
+        weights = [16, 13, 9, 19, 26, 8, 6, 9]
+        for i in range(n):
+            if random.random() < 0.30:
+                y = random.uniform(-1, 1)
+                r = math.sqrt(max(0.0, 1 - y * y))
+                a = random.uniform(0, 2 * math.pi)
+                out.append((r * math.cos(a), y, r * math.sin(a)))
+                continue
+            lat, lon, dlat, dlon = random.choices(blobs, weights)[0]
+            la = math.radians(max(-85, min(85, random.gauss(lat, dlat))))
+            lo = math.radians(random.gauss(lon, dlon))
+            y = math.sin(la)
+            r = math.cos(la)
+            out.append((r * math.cos(lo), y, r * math.sin(lo)))
+        return out
+
+    FORMS = [form_fib(balls_n), form_rings(balls_n), form_spiral(balls_n), form_earth(balls_n)]
     FORM_LINES = [lines_for(f) for f in FORMS]
     form_a = [0]
     form_b = [1]
@@ -1523,6 +1544,13 @@ def gui():
     next_scan = [_tnow + random.uniform(3, 6)]
     scan_t0 = [-10.0]
     scan_dur = [2.0]
+    latwave = [-10.0]
+    prev_state = [None]
+    next_commute = [_tnow + 16.0]
+    commute_t0 = [-10.0]
+    commute_dur = [2.4]
+    riders = [frozenset()]
+    next_commute_ok = [True]
     pts = []
     for i in range(balls_n):
         pts.append({"unit": FORMS[0][i],
@@ -1713,6 +1741,9 @@ def gui():
             next_form[0] = now + random.uniform(9, 15)
         if form_m[0] < 1.0:
             form_m[0] = min(1.0, form_m[0] + frame_dt / 1.6)
+        if ORB_STATE == "listen" and prev_state[0] != "listen":
+            latwave[0] = now
+        prev_state[0] = ORB_STATE
         if scan_active[0] and (now - scan_t0[0]) / scan_dur[0] >= 1.0:
             scan_active[0] = False
         elif not scan_active[0] and now > next_scan[0] and ORB_STATE != "think":
@@ -1720,6 +1751,17 @@ def gui():
             scan_t0[0] = now
             scan_dur[0] = random.uniform(1.4, 2.2)
             next_scan[0] = now + scan_dur[0] + random.uniform(5, 10)
+        ck = (now - commute_t0[0]) / commute_dur[0]
+        commuting = ck < 1.0
+        if not commuting and next_commute_ok[0] and now > next_commute[0] \
+                and ORB_STATE not in ("think", "speak"):
+            commute_t0[0] = now
+            commute_dur[0] = 2.4
+            riders[0] = frozenset(i for i in range(balls_n) if i % 11 == 3)
+            next_commute[0] = now + random.uniform(28, 34)
+            next_commute_ok[0] = False
+        if not commuting:
+            next_commute_ok[0] = True
         if now > next_twitch[0]:
             next_twitch[0] = now + random.uniform(4, 9)
             twitch_t0[0] = now
@@ -1752,16 +1794,30 @@ def gui():
         mk = fm * fm * (3.0 - 2.0 * fm)
         ua, ub = FORMS[fa], FORMS[fb]
         scan_pos = ((now - scan_t0[0]) / scan_dur[0] * balls_n) if scan_active[0] else -99.0
+        lw = (now - latwave[0]) / 0.9
+        if lw < 2.0:
+            wave_y = 1.0 - 2.0 * lw if lw < 1.0 else -1.0 + 2.0 * (lw - 1.0)
+        else:
+            wave_y = None
+        rset = riders[0] if commuting else frozenset()
 
         proj = []
         for i, p in enumerate(pts):
             sc = 1.0 + p["amp"] * math.sin(t * 0.8 + p["ph"])
             va, vb = ua[i], ub[i]
-            vx = va[0] + (vb[0] - va[0]) * mk
-            vy = va[1] + (vb[1] - va[1]) * mk
-            vz = va[2] + (vb[2] - va[2]) * mk
-            ln = math.hypot(vx, math.hypot(vy, vz)) or 1.0
-            vx, vy, vz = vx / ln, vy / ln, vz / ln
+            hx = va[0] + (vb[0] - va[0]) * mk
+            hy = va[1] + (vb[1] - va[1]) * mk
+            hz = va[2] + (vb[2] - va[2]) * mk
+            ln = math.hypot(hx, math.hypot(hy, hz)) or 1.0
+            hx, hy, hz = hx / ln, hy / ln, hz / ln
+            vx, vy, vz = hx, hy, hz
+            if i in rset:
+                ohx, ohy, _oz, *_r = project((hx * sc, hy * sc, hz * sc), cyw, syw, ct, st)
+                pygame.draw.line(screen, (18, 52, 64),
+                                 (int(cx + ohx * radius * spring), int(cy + ohy * radius * spring)),
+                                 (int(cx), int(cy)), 1)
+                scl = 1.0 - 0.85 * abs(math.sin(math.pi * ck * 2.5))
+                vx, vy, vz = hx * scl, hy * scl, hz * scl
             ox, oy, z, nx, ny, nz = project((vx * sc, vy * sc, vz * sc), cyw, syw, ct, st)
             lam = max(0.0, nx * LX + ny * LY + nz * LZ)
             shade = p["base"] * (0.22 + 0.42 * (z + 1) / 2 + 0.36 * lam)
@@ -1774,6 +1830,10 @@ def gui():
                 spr = scan_sprites[0]
             elif d_scan < 4.0:
                 spr = scan_sprites[1]
+            elif i in rset:
+                spr = lit_sprites[NB - 1]
+            elif wave_y is not None and abs(hy - wave_y) < 0.16:
+                spr = lit_sprites[NB - 1]
             elif p["spark"]:
                 spr = spark_sprites[b]
             elif thinking and min(abs(i - lit_center), balls_n - abs(i - lit_center)) < lit_half:
