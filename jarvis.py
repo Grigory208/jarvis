@@ -327,6 +327,82 @@ def save_memory(facts):
         print(f"[ не удалось сохранить память: {exc} ]")
 
 
+# ------------- Прогноз следующего действия (usage.json) -------------
+USAGE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "usage.json")
+PENDING_PREDICT = {}
+
+
+def load_usage():
+    try:
+        with open(USAGE_FILE, encoding="utf-8") as fh:
+            data = json.load(fh)
+        ev = data.get("events", [])
+        if isinstance(ev, list):
+            return [e for e in ev if isinstance(e, list) and len(e) == 3][-400:]
+    except (OSError, ValueError):
+        pass
+    return []
+
+
+def save_usage(events):
+    tmp = USAGE_FILE + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump({"events": events[-400:]}, fh, ensure_ascii=False)
+        os.replace(tmp, USAGE_FILE)
+    except OSError:
+        pass
+
+
+def norm_action_key(q):
+    return re.sub(r"[!?.…,\s]+", " ", fix_recognition(q.strip().lower())).strip()
+
+
+def log_action(query):
+    key = norm_action_key(query)
+    if not key:
+        return
+    ev = load_usage()
+    ev.append([round(time.time()), key, query.strip()[:80]])
+    save_usage(ev)
+
+
+def predict_next():
+    """-> (запрос, обоснование) предугаданного следующего действия."""
+    ev = load_usage()
+    if len(ev) < 4:
+        return "", ""
+    now = time.time()
+    seq = {}
+    last_key = ev[-1][1]
+    for i in range(len(ev) - 1):
+        if ev[i][1] == last_key and 0 < ev[i + 1][0] - ev[i][0] <= 2700:
+            q2 = ev[i + 1][2]
+            seq[q2] = seq.get(q2, 0) + 1
+    if seq:
+        cand, cnt = max(seq.items(), key=lambda kv: kv[1])
+        if cnt >= 2:
+            return cand, "часто идёт после «" + last_key[:40] + "»"
+    h = time.localtime().tm_hour
+    per = {}
+    for ts, _k, q in ev:
+        if abs((time.localtime(ts).tm_hour - h + 12) % 24 - 12) <= 1:
+            per[q] = per.get(q, 0) + 1
+    for q, cnt in sorted(per.items(), key=lambda kv: -kv[1]):
+        if cnt >= 3 and not any(now - ts < 14400 and qq == q for ts, _k, qq in ev):
+            return q, "обычно в это время"
+    return "", ""
+
+
+def maybe_predict():
+    q, why = predict_next()
+    if q:
+        PENDING_PREDICT["q"] = q
+        return q, why
+    PENDING_PREDICT.clear()
+    return "", ""
+
+
 def handle_memory(query, engine):
     """Запомни / что помнишь / забудь. Возвращает ответ или None."""
     q = query.strip().lower()
@@ -1047,32 +1123,43 @@ def pop_sentences(buffer):
 def respond(query, history, engine):
     """Один ответ на запрос: хоткеи/сайты -> действия -> мгновенные команды -> LLM.
     Возвращает (текст ответа | None, обновлённая история)."""
+    conf = query.strip().lower()
+    if re.fullmatch(r"(?:!)?(да|давай|ага|угу|го|ок|окей|ну да)", conf) and PENDING_PREDICT.get("q"):
+        query = PENDING_PREDICT.pop("q")
+        PENDING_PREDICT.clear()
+
     hotkey_reply = handle_hotkeys(query, engine)
     if hotkey_reply:
+        log_action(query)
         return hotkey_reply, history
 
     action_reply = handle_action(query, engine)
     if action_reply:
+        log_action(query)
         return action_reply, history
 
     memory_reply = handle_memory(query, engine)
     if memory_reply:
+        log_action(query)
         return memory_reply, history
 
     remind_reply = reminder_reply(query, engine)
     if remind_reply:
+        log_action(query)
         print("JARVIS > " + remind_reply)
         speak(engine, remind_reply)
         return remind_reply, history
 
     w_reply = weather_reply(query)
     if w_reply:
+        log_action(query)
         print("JARVIS > " + w_reply)
         speak(engine, w_reply)
         return w_reply, history
 
     answer = instant_command(query)
     if answer:
+        log_action(query)
         print("JARVIS > " + answer)
         speak(engine, answer)
         return answer, history
@@ -1154,6 +1241,9 @@ def main_text():
             break
 
         _, history = respond(query, history, engine)
+        pq, why = maybe_predict()
+        if pq:
+            print(f"[ прогноз: «{pq}» ({why}) — «да», чтобы выполнить ]")
 
 # ----------------------------- Голосовой режим -----------------------------
 
@@ -1505,37 +1595,83 @@ def gui():
             out.append((r * math.cos(a), y, r * math.sin(a)))
         return out
 
-    def lines_for(f):
+    _COAST_DATA = "-586 -642,-606 -643,-625 -651,-626 -659,-637 -665,-655 -676,-648 -687,-628 -696,-623 -704,-614 -720,-607 -732,-620 -744,-644 -753,-684 -760,-706 -766,-756 -767,-754 -773,-748 -782,-780 -788,-768 -795,-732 -804,-682 -813,-498 -817,-422 -817,-382 -813,-323 -808,-293 -800,-316 -793,-359 -791,-353 -781,-310 -774,-275 -765,-239 -762,-200 -757,-166 -748,-154 -741,-154 -731,-123 -724,-103 -713,-74 -717,-69 -709,-43 -715,-7 -712,19 -711,52 -706,71 -702,95 -700,120 -706,147 -700,170 -699,193 -699,219 -704,248 -705,281 -703,310 -698,328 -694,349 -687,372 -692,397 -695,420 -686,449 -681,465 -676,490 -671,509 -665,536 -659,564 -660,573 -667,599 -674,624 -680,650 -676,679 -679,697 -690,686 -699,691 -707,679 -719,710 -721,719 -713,733 -704,756 -697,781 -691,801 -681,821 -674,838 -673,868 -672,884 -665,906 -672,935 -672,950 -672,978 -672,1004 -669,1028 -656,1049 -663,1072 -670,1102 -667,1129 -661,1149 -664,1174 -669,1198 -673,1223 -666,1252 -667,1279 -667,1308 -664,1339 -663,1350 -657,1359 -660,1375 -670,1408 -668,1444 -668,1462 -672,1477 -681,1515 -687,1543 -686,1568 -694,1592 -696,1616 -706,1649 -708,1684 -710,1712 -717,1706 -724,1693 -737,1661 -744,1642 -755,1635 -767,1643 -778,1666 -783,1637 -791,1607 -802,1611 -813,-1553 -814,-1544 -812,-1489 -810,-1468 -799,-1516 -793,-1560 -787,-1581 -780,-1570 -773,-1529 -775,-1487 -769,-1461 -761,-1462 -754,-1428 -753,-1389 -750,-1352 -743,-1323 -743,-1296 -745,-1254 -745,-1211 -745,-1175 -740,-1139 -737,-1123 -747,-1101 -748,-1061 -751,-1020 -751,-1008 -745,-1031 -737,-1037 -726,-1003 -728,-977 -736,-937 -733,-901 -733,-884 -730,-852 -735,-815 -739,-793 -735,-762 -740,-739 -737,-702 -731,-674 -725,-676 -712,-685 -701,-680 -690,-674 -681,-673 -669,-654 -659,-636 -649,-614 -643,-599 -640,-578 -633,-586 -642;501 -136,499 -165,475 -238,437 -236,444 -201,449 -162,479 -137,501 -136;1436 -138,1459 -169,1487 -206,1521 -245,1531 -304,1507 -352,1469 -386,1422 -384,1384 -351,1378 -329,1343 -326,1251 -327,1206 -339,1156 -344,1152 -306,1135 -265,1136 -247,1146 -218,1188 -203,1223 -178,1244 -156,1266 -140,1303 -134,1324 -111,1365 -119,1354 -147,1393 -174,1416 -143,1421 -110,1436 -138;1341 -12,1392 -21,1453 -44,1470 -67,1500 -97,1489 -103,1447 -76,1421 -92,1380 -76,1337 -35,1320 -28,1318 -16,1341 -12;1252 14,1200 -5,1228 -9,1232 -47,1215 -46,1204 -55,1191 -35,1200 6,1252 14;1058 -59,1014 -28,986 18,953 55,991 36,1031 6,1045 -18,1058 -59;1179 18,1165 -25,1138 -34,1101 -16,1097 20,1137 39,1171 69,1191 50,1179 18;1410 371,1390 347,1351 346,1320 331,1304 323,1309 342,1357 355,1394 382,1414 414,1410 371;-30 586,-31 560,5 529,14 513,-36 502,-34 514,-46 535,-48 548,-56 563,-30 586;-905 695,-863 679,-812 687,-858 666,-907 636,-932 588,-873 560,-821 533,-798 547,-785 588,-747 622,-696 602,-646 603,-596 552,-564 518,-654 503,-703 470,-648 470,-598 459,-662 445,-691 440,-701 418,-719 413,-740 406,-750 392,-754 380,-765 387,-759 366,-791 335,-813 300,-801 258,-822 267,-851 296,-892 303,-898 293,-938 297,-974 267,-979 224,-959 188,-914 189,-885 215,-874 195,-881 183,-884 165,-882 157,-869 158,-852 159,-834 153,-835 136,-837 116,-822 92,-805 91,-781 92,-757 98,-726 117,-714 115,-713 91,-699 122,-662 106,-627 104,-598 84,-571 60,-529 54,-500 17,-478 -6,-415 -29,-352 -55,-377 -122,-396 -183,-431 -230,-486 -266,-516 -318,-557 -348,-572 -353,-612 -389,-638 -412,-635 -426,-676 -463,-687 -503,-699 -525,-749 -523,-741 -469,-734 -421,-735 -383,-717 -309,-702 -198,-760 -146,-794 -79,-811 -40,-808 -20,-795 10,-779 27,-773 58,-784 84,-805 81,-812 76,-829 81,-839 93,-851 96,-859 109,-877 129,-879 131,-906 139,-953 161,-997 167,-1039 187,-1053 211,-1079 245,-1104 272,-1128 300,-1149 314,-1133 288,-1113 257,-1094 234,-1117 245,-1136 266,-1142 281,-1167 316,-1191 341,-1225 376,-1242 411,-1247 482,-1228 490,-1279 523,-1320 555,-1378 585,-1471 609,-1517 592,-1526 601,-1566 570,-1631 547,-1606 560,-1570 589,-1604 591,-1638 598,-1649 626,-1608 638,-1628 643,-1667 661,-1644 676,-1629 699,-1551 711,-1497 705,-1410 697,-1329 695,-1274 704,-1215 698,-1153 679,-1082 687,-1015 676,-961 673,-964 712,-905 695;-1142 731,-1111 725,-1077 721,-1065 731,-1028 705,-1027 695,-1042 689,-1120 686,-1152 693,-1167 701,-1144 706,-1184 709,-1186 723,-1142 731;-866 732,-823 738,-778 727,-741 713,-679 701,-664 681,-622 662,-667 664,-671 651,-650 627,-674 629,-710 629,-734 642,-786 646,-740 655,-727 673,-769 689,-782 698,-849 700,-895 708,-894 731,-866 732;-1082 762,-1059 760,-1097 748,-1139 747,-1177 752,-1126 761,-1105 764,-1082 762;575 707,537 708,515 720,544 736,559 746,579 756,662 768,682 762,616 753,570 733,575 707;-947 771,-907 764,-878 756,-828 758,-805 747,-861 744,-924 748,-960 764,-947 771;1070 770,1139 753,1130 740,1232 730,1285 720,1356 717,1495 722,1597 697,1696 687,1786 694,1789 633,1737 617,1658 602,1621 578,1604 543,1560 532,1602 593,1601 605,1513 588,1390 571,1399 542,1401 484,1335 428,1300 419,1280 400,1292 374,1265 344,1257 379,1250 385,1247 397,1214 398,1180 392,1208 379,1197 356,1219 309,1211 281,1148 227,1108 214,1081 216,1083 161,1064 95,1031 112,1000 123,1005 74,1034 49,1039 25,1013 33,997 68,983 90,981 136,948 158,931 199,905 228,894 220,865 202,817 163,799 121,779 83,749 127,728 204,693 228,629 252,570 270,515 279,480 300,495 271,507 250,516 252,534 242,565 263,574 239,598 223,578 202,565 181,542 170,512 152,467 134,445 127,431 141,428 163,409 195,385 237,366 258,348 290,339 276,333 277,355 238,371 198,398 154,433 124,441 104,484 114,511 120,501 81,456 20,409 -21,392 -47,393 -80,404 -118,395 -167,348 -198,355 -231,342 -248,326 -275,306 -304,259 -337,226 -339,189 -344,182 -324,152 -271,143 -221,117 -173,127 -131,131 -98,122 -63,94 -21,93 12,85 45,54 49,19 61,-33 50,-77 44,-117 69,-141 99,-157 115,-168 132,-165 161,-164 196,-166 222,-148 251,-117 281,-93 326,-52 358,-1 359,63 371,102 372,109 357,115 331,166 312,201 322,239 320,289 309,322 313,345 316,359 354,340 362,287 367,273 404,352 420,417 420,375 447,391 470,350 463,339 444,333 461,296 450,280 420,264 402,244 401,228 397,231 379,213 376,200 399,192 420,152 442,137 451,123 446,162 417,185 402,171 389,161 390,136 412,97 440,46 434,7 407,-14 374,-54 359,-84 370,-94 394,-90 419,-43 434,-30 476,-10 493,47 531,81 535,83 568,103 569,99 550,136 541,187 544,216 574,241 583,269 594,229 598,224 638,212 650,188 601,141 554,84 583,86 635,192 698,313 705,403 679,332 666,365 648,430 664,463 683,481 675,547 681,600 695,682 691,685 719,725 711,724 662,749 690,747 728,759 719,823 739,903 756,1008 764,1070 770;-685 831,-618 826,-668 817,-678 809,-732 796,-755 792,-754 785,-784 775,-779 770,-832 765,-895 765,-883 779,-863 782,-854 790,-869 803,-818 805,-894 809,-914 816,-889 821,-843 826,-811 830,-757 831,-685 831;-271 835,-265 823,-314 820,-229 821,-232 812,-128 817,-168 804,-177 801,-197 776,-217 766,-196 752,-216 742,-208 735,-223 726,-248 723,-221 715,-243 709,-264 702,-223 701,-307 681,-328 677,-370 659,-407 648,-412 635,-429 611,-463 609,-492 614,-521 643,-537 661,-530 684,-509 699,-526 694,-548 703,-534 708,-540 715,-547 726,-561 736,-586 755,-661 761,-697 764,-668 774,-733 780,-657 794,-672 805,-622 813,-572 822,-504 824,-466 820,-468 826,-399 832,-271 835"
+
+    def _coast_rings():
         out = []
-        for i in range(len(f) - 1):
-            d2 = sum((f[i][c] - f[i + 1][c]) ** 2 for c in range(3))
-            if d2 < 0.20:
-                out.append((i, i + 1))
+        for grp in _COAST_DATA.split(";"):
+            ring = []
+            for pair in grp.split(","):
+                x, y = pair.split(" ")
+                ring.append((int(y) / 10.0, int(x) / 10.0))
+            out.append(ring)
         return out
+
+    def _pip(lat, lon, poly):
+        inside = False
+        j = len(poly) - 1
+        for i in range(len(poly)):
+            yi, xi = poly[i]
+            yj, xj = poly[j]
+            if (yi > lat) != (yj > lat) and lon < (xj - xi) * (lat - yi) / (yj - yi) + xi:
+                inside = not inside
+            j = i
+        return inside
+
+    def _ll2v(lat, lon):
+        la = math.radians(max(-88, min(88, lat)))
+        lo = math.radians(lon)
+        y = math.sin(la)
+        r = math.cos(la)
+        return (r * math.cos(lo), y, r * math.sin(lo))
+
+    COAST_RINGS = _coast_rings()
+    _coast_per = []
+    for _ring in COAST_RINGS:
+        _p = 0.0
+        for _i in range(len(_ring) - 1):
+            _a, _b = _ring[_i], _ring[_i + 1]
+            _p += math.hypot(_b[0] - _a[0], (_b[1] - _a[1]) * math.cos(math.radians((_a[0] + _b[0]) / 2)))
+        _coast_per.append(max(_p, 1e-6))
 
     def form_earth(n):
         out = []
-        blobs = [(52, -100, 14, 22), (-14, -60, 12, 15), (50, 16, 9, 14),
-                 (8, 20, 14, 16), (42, 88, 15, 26), (-25, 134, 8, 11),
-                 (68, 40, 8, 16), (-72, 0, 6, 180)]
-        weights = [16, 13, 9, 19, 26, 8, 6, 9]
-        for i in range(n):
-            if random.random() < 0.30:
-                y = random.uniform(-1, 1)
-                r = math.sqrt(max(0.0, 1 - y * y))
-                a = random.uniform(0, 2 * math.pi)
-                out.append((r * math.cos(a), y, r * math.sin(a)))
-                continue
-            lat, lon, dlat, dlon = random.choices(blobs, weights)[0]
-            la = math.radians(max(-85, min(85, random.gauss(lat, dlat))))
-            lo = math.radians(random.gauss(lon, dlon))
-            y = math.sin(la)
-            r = math.cos(la)
-            out.append((r * math.cos(lo), y, r * math.sin(lo)))
-        return out
+        n_coast = int(n * 0.55)
+        tot = sum(_coast_per) or 1.0
+        for _ring, _per in zip(COAST_RINGS, _coast_per):
+            m = max(3, int(n_coast * _per / tot))
+            segs = []
+            for _i in range(len(_ring) - 1):
+                _a, _b = _ring[_i], _ring[_i + 1]
+                segs.append(math.hypot(_b[0] - _a[0],
+                                       (_b[1] - _a[1]) * math.cos(math.radians((_a[0] + _b[0]) / 2))))
+            stot = sum(segs) or 1.0
+            for j in range(m):
+                pick = (j + 0.5) * stot / m
+                acc = 0.0
+                for i, sl in enumerate(segs):
+                    if acc + sl >= pick:
+                        a, b = _ring[i], _ring[i + 1]
+                        k = (pick - acc) / sl if sl else 0.0
+                        out.append(_ll2v(a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k))
+                        break
+                    acc += sl
+        form_earth.coast_n = len(out)
+        while len(out) < int(n * 0.86):
+            ring = COAST_RINGS[random.randrange(len(COAST_RINGS))]
+            lat = random.uniform(min(p[0] for p in ring), max(p[0] for p in ring))
+            lon = random.uniform(min(p[1] for p in ring), max(p[1] for p in ring))
+            if _pip(lat, lon, ring):
+                out.append(_ll2v(lat, lon))
+        form_earth.land_n = len(out)
+        while len(out) < n:
+            y = random.uniform(-1, 1)
+            r = math.sqrt(max(0.0, 1 - y * y))
+            a = random.uniform(0, 2 * math.pi)
+            out.append((r * math.cos(a), y, r * math.sin(a)))
+        return out[:n]
 
     FORMS = [form_fib(balls_n), form_rings(balls_n), form_spiral(balls_n), form_earth(balls_n)]
-    FORM_LINES = [lines_for(f) for f in FORMS]
     form_a = [0]
     form_b = [1]
     form_m = [1.0]
@@ -1634,6 +1770,14 @@ def gui():
                     last_action[0] = "Готово: " + reply
                 else:
                     last_action[0] = "Не смог выполнить, сэр"
+                pq, why = maybe_predict()
+                if pq:
+                    last_action[0] = "Прогноз: «" + pq + "» (" + why + ") — «да» или клик"
+                    chip_labels[:] = [pq] + list(chip_labels[1:])
+                    chip_surfs[:] = [f_small.render("« Да — " + pq + " »", True, LITC)] + chip_surfs[1:]
+                elif chip_labels[0] != GUI_SUGGESTIONS[0]:
+                    chip_labels[0] = GUI_SUGGESTIONS[0]
+                    chip_surfs[0] = f_small.render("« " + GUI_SUGGESTIONS[0] + " »", True, DIM)
             except Exception as exc:
                 last_action[0] = f"Ошибка: {exc}"
 
@@ -1812,15 +1956,18 @@ def gui():
             hx, hy, hz = hx / ln, hy / ln, hz / ln
             vx, vy, vz = hx, hy, hz
             if i in rset:
-                ohx, ohy, _oz, *_r = project((hx * sc, hy * sc, hz * sc), cyw, syw, ct, st)
-                pygame.draw.line(screen, (18, 52, 64),
-                                 (int(cx + ohx * radius * spring), int(cy + ohy * radius * spring)),
-                                 (int(cx), int(cy)), 1)
                 scl = 1.0 - 0.85 * abs(math.sin(math.pi * ck * 2.5))
                 vx, vy, vz = hx * scl, hy * scl, hz * scl
             ox, oy, z, nx, ny, nz = project((vx * sc, vy * sc, vz * sc), cyw, syw, ct, st)
             lam = max(0.0, nx * LX + ny * LY + nz * LZ)
             shade = p["base"] * (0.22 + 0.42 * (z + 1) / 2 + 0.36 * lam)
+            if fa == 3 or fb == 3:
+                if i < getattr(form_earth, "coast_n", 0):
+                    shade = max(shade, 0.95)
+                elif i < getattr(form_earth, "land_n", int(balls_n * 0.86)):
+                    shade = max(shade, 0.6)
+                else:
+                    shade *= 0.35
             b = min(NB - 1, int(shade * NB))
             sx = int(cx + ox * radius * spring)
             sy = int(cy + oy * radius * spring)
@@ -1842,10 +1989,6 @@ def gui():
                 spr = orb_sprites[b]
             rho = math.hypot(ox, oy) / radius
             proj.append((sx, sy, spr, rho, p["spark"], d_scan))
-
-        for ia, ibl in FORM_LINES[fb] if fm >= 0.5 else FORM_LINES[fa]:
-            pa, pb2 = proj[ia], proj[ibl]
-            pygame.draw.line(screen, (26, 78, 96), (pa[0], pa[1]), (pb2[0], pb2[1]), 1)
 
         for sx, sy, spr, rho, spark, d_scan in proj:
             screen.blit(spr, (sx - spr.get_width() // 2, sy - spr.get_height() // 2),
