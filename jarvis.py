@@ -2471,60 +2471,105 @@ def hud_overlay():
             os.remove(OVERLAY_STOP_FILE)
     except OSError:
         pass
-    _gs = load_gui_settings()
-    transparent = sys.platform.startswith("win")
     info = pygame.display.Info()
     W, H = info.current_w, info.current_h
+    transparent = sys.platform.startswith("win")
     screen = pygame.display.set_mode((W, H), pygame.NOFRAME if transparent else 0)
     KEY = (1, 2, 3)
-    pygame.display.set_caption("JARVIS HUD")
+    pygame.display.set_caption("JARVIS")
     ok_trans = False
-    hwnd = None
+    hwnd = u32 = None
     hotkey_on = False
-    u32 = None
     if transparent:
         try:
             hwnd = pygame.display.get_wm_info()["window"]
             u32 = ctypes.windll.user32
-            WS_EX_LAYERED, WS_EX_TRANSPARENT, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW = 0x00080000, 0x00000020, 0x08000000, 0x00000080
+            WS_EX_LAYERED, WS_EX_TOPMOST, WS_EX_TOOLWINDOW = 0x00080000, 0x00000008, 0x00000080
             u32.SetWindowLongW(hwnd, -20, u32.GetWindowLongW(hwnd, -20)
-                               | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW)
+                               | WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW)
             u32.SetLayeredWindowAttributes(hwnd, KEY[0] | (KEY[1] << 8) | (KEY[2] << 16), 0, 0x00000001)
             u32.ShowWindow(hwnd, 4)
             u32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)
             ok_trans = True
         except Exception:
-            hwnd = None
+            hwnd = u32 = None
         try:
-            MOD_ALT, MOD_CONTROL, VK_J = 0x0001, 0x0002, 0x4A
-            u32.RegisterHotKey(None, 1, MOD_ALT | MOD_CONTROL, VK_J)
+            u32.RegisterHotKey(None, 1, 0x0001 | 0x0002, 0x4A)
             hotkey_on = True
         except Exception:
             hotkey_on = False
-    else:
-        hotkey_on = False
 
-    def hf(sz):
-        return pygame.font.Font(None, sz)
+    def hf(sz, bold=False):
+        return pygame.font.SysFont("arial", sz, bold=bold)
 
-    f_22, f_14 = hf(23), hf(15)
-    FG2, GOLDC, DIM2 = (150, 210, 255), (255, 176, 64), (70, 125, 165)
+    f_17, f_14 = hf(18), hf(15)
+    FG2, GOLDC, DIM2 = (170, 220, 255), (255, 176, 64), (110, 160, 195)
+    PW, PH = 380, 500
+    px0, py0 = W - PW - 18, H - PH - 18
+    panel = pygame.Rect(px0, py0, PW, PH)
+    close_r = pygame.Rect(px0 + PW - 30, py0 + 8, 22, 18)
+    chat = [("jarvis", "К вашим услугам, сэр. Напишите ниже команду.")]
+    hist = [[]]
+    busy = [False]
+    box_txt = [""]
+    focus = [False]
+    state = ["idle"]
+    try:
+        engine = find_tts()
+    except Exception:
+        engine = None
+
+    def wrap(txt, maxw):
+        words, lines, cur = txt.split(), [], ""
+        for w in words:
+            tr = (cur + " " + w).strip()
+            if f_14.size(tr)[0] <= maxw:
+                cur = tr
+            else:
+                if cur:
+                    lines.append(cur)
+                cur = w
+        if cur:
+            lines.append(cur)
+        return lines
+
+    def worker(q):
+        busy[0] = True
+        state[0] = "think"
+        try:
+            reply, new_hist = respond(q, hist[0], engine)
+            hist[0] = new_hist
+            if reply:
+                chat[:] = chat[-60:] + [("jarvis", reply)]
+                state[0] = "speak"
+                if engine:
+                    try:
+                        speak(engine, reply)
+                    except Exception:
+                        pass
+            else:
+                chat[:] = chat[-60:] + [("jarvis", "не смог выполнить, сэр")]
+        except Exception as exc:
+            chat[:] = chat[-60:] + [("jarvis", f"ошибка: {exc}")]
+        busy[0] = False
+        state[0] = "idle"
+
+    def send(q):
+        if busy[0]:
+            chat[:] = chat[-60:] + [("jarvis", "секунду, сэр…")]
+            return
+        chat[:] = chat[-60:] + [("you", q)]
+        threading.Thread(target=worker, args=(q,), daemon=True).start()
+
     clock = pygame.time.Clock()
     t0 = time.perf_counter()
-    mem_cache = [0, 0.0]
-    try:
-        cmds_n = len(load_custom_commands())
-    except Exception:
-        cmds_n = 0
-    cx0, cy0, ba = W // 2, H // 2, min(W, H)
     WM_HOTKEY = 0x0312
     last_top = 0.0
     import ctypes.wintypes as wt
-    MSG_T = wt.MSG
     while True:
         if hotkey_on and u32 is not None:
             try:
-                msg = MSG_T()
+                msg = wt.MSG()
                 while u32.PeekMessageW(ctypes.byref(msg), None, 0, 0, 0x0001):
                     if msg.message == WM_HOTKEY:
                         return
@@ -2536,65 +2581,85 @@ def hud_overlay():
             except OSError:
                 pass
             return
-        for ev in pygame.event.get():
-            if ev.type == pygame.QUIT:
-                return
         t = time.perf_counter() - t0
-        if ok_trans and t - last_top > 5.0 and u32 is not None:
+        if ok_trans and not focus[0] and t - last_top > 1.0 and u32 is not None:
             try:
                 u32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)
             except Exception:
                 pass
             last_top = t
+        for ev in pygame.event.get():
+            if ev.type == pygame.QUIT:
+                return
+            if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
+                if close_r.collidepoint(ev.pos):
+                    return
+                elif panel.collidepoint(ev.pos):
+                    if ev.pos[1] > panel.y + PH - 44:
+                        focus[0] = True
+                else:
+                    focus[0] = False
+            if ev.type == pygame.KEYDOWN and focus[0]:
+                if ev.key == pygame.K_ESCAPE:
+                    focus[0] = False
+                elif ev.key == pygame.K_BACKSPACE:
+                    box_txt[0] = box_txt[0][:-1]
+                elif ev.key == pygame.K_RETURN:
+                    q = box_txt[0].strip()
+                    box_txt[0] = ""
+                    if q:
+                        send(q)
+                elif ev.unicode and ev.unicode.isprintable():
+                    box_txt[0] += ev.unicode
         screen.fill(KEY if ok_trans else (3, 9, 18))
-        for qpx, qpy, qdir in ((110, 110, 1), (W - 110, 110, -1), (110, H - 110, -1), (W - 110, H - 110, 1)):
-            for ri, rr in enumerate((92, 134, 178)):
-                for si2 in range(2):
-                    a0 = qdir * t * (14 + 9 * ri) + ri * 40 + si2 * 130
-                    pygame.draw.arc(screen, GOLDC if ri == 1 else FG2,
-                                    (qpx - rr, qpy - rr, rr * 2, rr * 2),
-                                    math.radians(a0), math.radians(a0 + 58), 2)
-        for xi in range(40, W - 30, 26):
-            pygame.draw.line(screen, DIM2, (xi, 20), (xi, 27))
-            pygame.draw.line(screen, DIM2, (xi, H - 27), (xi, H - 20))
-        for rr in (int(ba * 0.31), int(ba * 0.43)):
-            pygame.draw.circle(screen, DIM2, (cx0, cy0), rr, 1)
-        for ai2 in range(24):
-            angg = math.radians(ai2 * 15 + t * 8)
-            pygame.draw.line(screen, DIM2,
-                             (int(cx0 + math.cos(angg) * ba * 0.30), int(cy0 + math.sin(angg) * ba * 0.30)),
-                             (int(cx0 + math.cos(angg) * ba * 0.335), int(cy0 + math.sin(angg) * ba * 0.335)))
-        if t - mem_cache[1] > 2.0:
-            mem_cache[1] = t
-            try:
-                mem_cache[0] = len(load_memory())
-            except Exception:
-                mem_cache[0] = 0
-        lx, ly = 64, H // 2 - 78
-        screen.blit(f_22.render("JARVIS  ·  MK-XV", True, GOLDC), (lx, ly))
-        for di, dtxt in enumerate((
-                f"ВРЕМЯ    {time.strftime('%H:%M:%S')}",
-                f"ДАТА     {time.strftime('%d.%m.%Y')}",
-                f"UPTIME   {int(t)} c",
-                f"ПАМЯТЬ   {mem_cache[0]} факт(ов)",
-                f"КОМАНД   {cmds_n}",
-                f"СТАТУС   СИСТЕМЫ В НОРМЕ")):
-            screen.blit(f_14.render(dtxt, True, FG2), (lx, ly + 44 + di * 22))
-        rr2, rcx, rcy = 118, W - 190, H // 2 - 40
-        pygame.draw.circle(screen, DIM2, (rcx, rcy), rr2, 1)
-        pygame.draw.circle(screen, DIM2, (rcx, rcy), int(rr2 * 0.55), 1)
-        swee = t * 1.6
-        pygame.draw.line(screen, FG2, (rcx, rcy),
-                         (int(rcx + math.cos(swee) * rr2), int(rcy + math.sin(swee) * rr2)), 2)
-        wob = H - 88
-        wb = W // 2 - 112
-        for bi in range(24):
-            hh = 4 + int(30 * abs(math.sin(t * (2.2 + 0.31 * bi) + bi * 0.8)))
-            pygame.draw.rect(screen, GOLDC if bi % 6 == 0 else FG2, (wb + bi * 9, wob - hh, 6, hh), border_radius=2)
-        wf = f_14.render("СИСТЕМЫ В НОРМЕ, СЭР", True, DIM2)
-        screen.blit(wf, wf.get_rect(midtop=(W // 2, wob + 12)))
-        kf = f_14.render("CTRL+ALT+J — убрать голограмму", True, (110, 160, 195))
-        screen.blit(kf, kf.get_rect(midtop=(W // 2, 30)))
+        pygame.draw.rect(screen, (10, 22, 36), panel, border_radius=12)
+        pygame.draw.rect(screen, (52, 110, 160), panel, 1, border_radius=12)
+        ocx, ocy, orr = panel.centerx, py0 + 76, 44
+        pygame.draw.circle(screen, (18, 48, 78), (ocx, ocy), orr + 6, 1)
+        np = 56
+        for i in range(np):
+            yy = 1.0 - 2.0 * i / (np - 1)
+            rr2 = math.sqrt(max(0.0, 1 - yy * yy))
+            phi = math.pi * (3 - math.sqrt(5)) * i + t * (5.0 if state[0] == "think" else 2.0)
+            xo = math.cos(phi) * rr2 * orr
+            yo = yy * orr * 0.92
+            shade = 0.5 + 0.5 * (1 - math.cos(phi)) / 2
+            if i % 6 == 0 and state[0] == "speak":
+                col = GOLDC
+            else:
+                col = (min(255, int(150 * shade) + 40), min(255, int(210 * shade) + 40),
+                       min(255, int(255 * shade) + 30))
+            pygame.draw.rect(screen, col, (int(ocx + xo) - 1, int(ocy + yo) - 1, 3, 3), border_radius=1)
+        pygame.draw.circle(screen, GOLDC if state[0] == "think" else (225, 245, 255),
+                           (ocx, ocy), 7 + (2 if state[0] == "speak" else 0))
+        screen.blit(f_17.render("JARVIS", True, GOLDC), (panel.x + 12, panel.y + 10))
+        screen.blit(f_14.render("голограмма · чат", True, DIM2), (panel.x + 96, panel.y + 13))
+        pygame.draw.rect(screen, (150, 70, 70), close_r, border_radius=4)
+        cf = f_14.render("✕", True, (255, 220, 220))
+        screen.blit(cf, cf.get_rect(center=close_r.center))
+        ca_t = panel.y + 138
+        ca_b = panel.y + PH - 46
+        rows = []
+        for who, msg_txt in chat[-12:]:
+            pfx = "ВЫ: " if who == "you" else "J: "
+            col3 = GOLDC if who == "you" else FG2
+            for ln in wrap(pfx + msg_txt, PW - 32):
+                rows.append((ln, col3))
+        for row_txt, colr in rows[-14:]:
+            if ca_t + 17 > ca_b:
+                break
+            screen.blit(f_14.render(row_txt, True, colr), (panel.x + 16, ca_t))
+            ca_t += 17
+        if busy[0]:
+            screen.blit(f_14.render("обрабатываю, сэр…", True, GOLDC), (panel.x + PW - 150, ca_b - 17))
+        ib = pygame.Rect(panel.x + 12, panel.y + PH - 36, PW - 24, 26)
+        pygame.draw.rect(screen, (6, 16, 28), ib, border_radius=6)
+        pygame.draw.rect(screen, GOLDC if focus[0] else (34, 70, 104), ib, 1, border_radius=6)
+        cur = "" if not focus[0] or int(t * 2) % 2 else "_"
+        if box_txt[0] or focus[0]:
+            screen.blit(f_14.render("› " + box_txt[0] + cur, True, FG2), (ib.x + 8, ib.y + 6))
+        else:
+            screen.blit(f_14.render("кликните и введите команду…", True, DIM2), (ib.x + 8, ib.y + 6))
         pygame.display.flip()
         clock.tick(30)
 
