@@ -1403,7 +1403,7 @@ VOICE_STOP = False
 GUI_SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gui_settings.json")
 OVERLAY_STOP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hud.stop")
 HUD_LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hud.log")
-APP_VERSION = "v17-tk"
+APP_VERSION = "v18-tk"
 
 
 def _hud_log(msg):
@@ -2555,11 +2555,6 @@ def hud_overlay():
             if reply:
                 chat[:] = chat[-60:] + [("jarvis", reply)]
                 state[0] = "speak"
-                if engine:
-                    try:
-                        speak(engine, reply)
-                    except Exception:
-                        pass
             else:
                 chat[:] = chat[-60:] + [("jarvis", "не смог выполнить, сэр")]
         except Exception as exc:
@@ -2708,7 +2703,18 @@ def hud_overlay_tk():
         pass
     root.configure(bg=TC)
     dw, dh = root.winfo_screenwidth(), root.winfo_screenheight()
-    root.geometry(f"{PW}x{PH}+{dw - PW - 18}+{dh - PH - 18}")
+    wx, wy = 0, 0
+    wr, wb = dw, dh
+    if sys.platform.startswith("win"):
+        try:
+            import ctypes.wintypes as wt
+            _wa = wt.RECT()
+            if ctypes.windll.user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(_wa), 0):
+                wx, wy, wr, wb = _wa.left, _wa.top, _wa.right, _wa.bottom
+                _hud_log(f"work area: x={wx} y={wy} w={wr - wx} h={wb - wy}")
+        except Exception:
+            pass
+    root.geometry(f"{PW}x{PH}+{wr - PW - 18}+{wb - PH - 18}")
 
     canvas = tk.Canvas(root, width=PW, height=PH, bg=TC, highlightthickness=0)
     canvas.place(x=0, y=0)
@@ -2777,11 +2783,6 @@ def hud_overlay_tk():
                 chat_add("jarvis", reply)
                 state[0] = "speak"
                 root.after(0, lambda: status.configure(text="говорю…"))
-                if engine:
-                    try:
-                        speak(engine, reply)
-                    except Exception:
-                        pass
             else:
                 chat_add("jarvis", "не смог выполнить, сэр")
         except Exception as exc:
@@ -2869,7 +2870,7 @@ def hud_overlay_tk():
 
     poll()
     frame()
-    _hud_log(f"tk overlay shown at +{dw - PW - 18}+{dh - PH - 18}")
+    _hud_log(f"tk overlay shown at +{wr - PW - 18}+{wb - PH - 18}")
     root.mainloop()
 
 
