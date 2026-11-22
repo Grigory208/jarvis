@@ -5,3 +5,5 @@ memory.json
 usage.json
 gui_settings.json
 custom_commands.json
+hud.log
+hud.stop

@@ -1402,7 +1402,16 @@ ORB_STATE = "idle"
 VOICE_STOP = False
 GUI_SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gui_settings.json")
 OVERLAY_STOP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hud.stop")
-APP_VERSION = "v16c"
+HUD_LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hud.log")
+APP_VERSION = "v16d"
+
+
+def _hud_log(msg):
+    try:
+        with open(HUD_LOG_FILE, "a", encoding="utf-8") as fh:
+            fh.write(f"[{time.strftime('%H:%M:%S')}] {msg}\n")
+    except OSError:
+        pass
 GUI_SUGGESTIONS = ("Открой YouTube", "Открой калькулятор", "Как дела?", "Открой блокнот", "Сколько времени?")
 
 
@@ -2481,20 +2490,24 @@ def hud_overlay():
     hwnd = u32 = None
     hotkey_on = False
     if transparent:
+        _hud_log(f"hud {APP_VERSION} start: DW={DW} DH={DH}")
         try:
             hwnd = pygame.display.get_wm_info()["window"]
             u32 = ctypes.windll.user32
-            WS_EX_LAYERED, WS_EX_TOPMOST, WS_EX_TOOLWINDOW = 0x00080000, 0x00000008, 0x00000080
+            WS_EX_TOPMOST, WS_EX_TOOLWINDOW = 0x00000008, 0x00000080
             u32.SetWindowLongW(hwnd, -20, u32.GetWindowLongW(hwnd, -20)
-                               | WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW)
-            u32.SetLayeredWindowAttributes(hwnd, 0, 235, 0x00000002)
+                               | WS_EX_TOPMOST | WS_EX_TOOLWINDOW)
+            _hud_log(f"extstyle set, hwnd={hwnd}")
             ctypes.windll.gdi32.CreateRoundRectRgn.restype = ctypes.c_void_p
             rgn = ctypes.windll.gdi32.CreateRoundRectRgn(0, 0, PW + 1, PH + 1, 24, 24)
             u32.SetWindowRgn(hwnd, ctypes.c_void_p(rgn), 1)
+            _hud_log(f"region set, rgn={rgn}")
             u32.MoveWindow(hwnd, DW - PW - 18, DH - PH - 18, PW, PH, 0)
             u32.ShowWindow(hwnd, 4)
             u32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)
+            _hud_log(f"move+topmost set, expect x={DW - PW - 18} y={DH - PH - 18}")
         except Exception:
+            _hud_log("overlay setup FAILED:\n" + traceback.format_exc())
             hwnd = u32 = None
         try:
             u32.RegisterHotKey(None, 1, 0x0001 | 0x0002, 0x4A)
@@ -2566,6 +2579,7 @@ def hud_overlay():
     t0 = time.perf_counter()
     WM_HOTKEY = 0x0312
     last_top = 0.0
+    last_state_t = 0.0
     import ctypes.wintypes as wt
     while True:
         if hotkey_on and u32 is not None:
@@ -2586,6 +2600,11 @@ def hud_overlay():
         if u32 is not None and t - last_top > 2.0:
             try:
                 u32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)
+                if t - last_state_t > 10.0:
+                    last_state_t = t
+                    rect = (ctypes.c_long * 4)()
+                    u32.GetWindowRect(hwnd, rect)
+                    _hud_log(f"alive, rect={tuple(rect)}")
             except Exception:
                 pass
             last_top = t
@@ -2963,7 +2982,13 @@ if __name__ == "__main__":
         elif len(sys.argv) > 1 and sys.argv[1].lower() in ("doctor", "diag", "доктор"):
             doctor()
         elif len(sys.argv) > 1 and sys.argv[1].lower() in ("hud", "голограмма", "holo"):
-            hud_overlay()
+            try:
+                hud_overlay()
+            except SystemExit:
+                raise
+            except Exception:
+                _hud_log("overlay crashed:\n" + traceback.format_exc())
+                raise
         elif len(sys.argv) > 1 and sys.argv[1].lower() in ("gui", "шар", "окно"):
             gui()
         elif len(sys.argv) > 1 and sys.argv[1].lower() in ("voice", "-v", "голос", "голосовой"):
