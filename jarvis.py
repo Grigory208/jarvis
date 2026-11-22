@@ -2714,13 +2714,19 @@ def hud_overlay_tk():
                 _hud_log(f"work area: x={wx} y={wy} w={wr - wx} h={wb - wy}")
         except Exception:
             pass
+    scan_warn = [False]
+
     def spot_std(x, y):
         try:
             from PIL import ImageGrab, ImageStat
             img = ImageGrab.grab(bbox=(x, y, x + PW, y + PH))
             img = img.convert("L").resize((48, 48))
             return ImageStat.Stat(img).stddev[0]
-        except Exception:
+        except Exception as exc:
+            if not scan_warn[0]:
+                scan_warn[0] = True
+                _hud_log(f"scan экрана недоступен: {exc}")
+                _hud_log("для авто-подбора места: pip install pillow")
             return 0.0
 
     def pick_origin(skip=None):
@@ -2734,6 +2740,9 @@ def hud_overlay_tk():
             _hud_log(f"spot ({cx},{cy}) busy={v:.1f}")
             if best_v is None or v < best_v:
                 best, best_v = (cx, cy), v
+        if best_v is not None and best_v <= 0.001:
+            _hud_log("все углы busy=0 — скан не сработал, ставлю правый нижний")
+            return wr - PW - 18, wb - PH - 18
         return best or (wr - PW - 18, wb - PH - 18)
 
     pos = list(pick_origin())
