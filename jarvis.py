@@ -2471,10 +2471,11 @@ def hud_overlay():
             os.remove(OVERLAY_STOP_FILE)
     except OSError:
         pass
-    info = pygame.display.Info()
-    W, H = info.current_w, info.current_h
+    desktop = pygame.display.Info()
+    DW, DH = desktop.current_w, desktop.current_h
     transparent = sys.platform.startswith("win")
-    screen = pygame.display.set_mode((W, H), pygame.NOFRAME if transparent else 0)
+    PW, PH = 380, 500
+    screen = pygame.display.set_mode((PW, PH), pygame.NOFRAME if transparent else 0)
     KEY = (1, 2, 3)
     pygame.display.set_caption("JARVIS")
     ok_trans = False
@@ -2488,6 +2489,7 @@ def hud_overlay():
             u32.SetWindowLongW(hwnd, -20, u32.GetWindowLongW(hwnd, -20)
                                | WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW)
             u32.SetLayeredWindowAttributes(hwnd, KEY[0] | (KEY[1] << 8) | (KEY[2] << 16), 0, 0x00000001)
+            u32.MoveWindow(hwnd, DW - PW - 18, DH - PH - 18, PW, PH, 0)
             u32.ShowWindow(hwnd, 4)
             u32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)
             ok_trans = True
@@ -2504,10 +2506,8 @@ def hud_overlay():
 
     f_17, f_14 = hf(18), hf(15)
     FG2, GOLDC, DIM2 = (170, 220, 255), (255, 176, 64), (110, 160, 195)
-    PW, PH = 380, 500
-    px0, py0 = W - PW - 18, H - PH - 18
-    panel = pygame.Rect(px0, py0, PW, PH)
-    close_r = pygame.Rect(px0 + PW - 30, py0 + 8, 22, 18)
+    panel = pygame.Rect(0, 0, PW, PH)
+    close_r = pygame.Rect(PW - 30, 8, 22, 18)
     chat = [("jarvis", "К вашим услугам, сэр. Напишите ниже команду.")]
     hist = [[]]
     busy = [False]
@@ -2582,7 +2582,7 @@ def hud_overlay():
                 pass
             return
         t = time.perf_counter() - t0
-        if ok_trans and not focus[0] and t - last_top > 1.0 and u32 is not None:
+        if ok_trans and t - last_top > 5.0 and u32 is not None:
             try:
                 u32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)
             except Exception:
@@ -2594,11 +2594,8 @@ def hud_overlay():
             if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
                 if close_r.collidepoint(ev.pos):
                     return
-                elif panel.collidepoint(ev.pos):
-                    if ev.pos[1] > panel.y + PH - 44:
-                        focus[0] = True
-                else:
-                    focus[0] = False
+                elif ev.pos[1] > PH - 44:
+                    focus[0] = True
             if ev.type == pygame.KEYDOWN and focus[0]:
                 if ev.key == pygame.K_ESCAPE:
                     focus[0] = False
@@ -2614,7 +2611,7 @@ def hud_overlay():
         screen.fill(KEY if ok_trans else (3, 9, 18))
         pygame.draw.rect(screen, (10, 22, 36), panel, border_radius=12)
         pygame.draw.rect(screen, (52, 110, 160), panel, 1, border_radius=12)
-        ocx, ocy, orr = panel.centerx, py0 + 76, 44
+        ocx, ocy, orr = panel.centerx, 76, 44
         pygame.draw.circle(screen, (18, 48, 78), (ocx, ocy), orr + 6, 1)
         np = 56
         for i in range(np):
