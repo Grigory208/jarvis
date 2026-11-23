@@ -1403,7 +1403,7 @@ VOICE_STOP = False
 GUI_SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gui_settings.json")
 OVERLAY_STOP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hud.stop")
 HUD_LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hud.log")
-APP_VERSION = "v21c-tk"
+APP_VERSION = "v21d-tk"
 
 
 def _hud_log(msg):
@@ -2716,7 +2716,7 @@ def hud_overlay_tk():
             pass
     SIZES = [(380, 500), (380, 440), (320, 420), (300, 360)]
     BUSY_OK = 3.0
-    AD_TH = 22.0
+    AD_TH = 28.0
     scan_warn = [False]
 
     def grad_map():
@@ -2736,19 +2736,22 @@ def hud_overlay_tk():
         grad = [0.0] * (W * H)
         colf = [0.0] * (W * H)
         lum = [0.0] * (W * H)
+        hb = [-1] * (W * H)
         for i, p in enumerate(ppr):
             r, g, b = p[0], p[1], p[2]
             colf[i] = float(max(r, g, b) - min(r, g, b))
             lum[i] = (r * 3 + g * 6 + b) / 10.0
+            if colf[i] >= 60.0:
+                hb[i] = (r // 64) * 16 + (g // 64) * 4 + (b // 64)
         for y in range(1, H):
             row = y * W
             for x in range(1, W):
                 i = row + x
                 grad[i] = abs(lum[i] - lum[i - 1]) + abs(lum[i] - lum[i - W])
-        return (grad, colf, W, H, (wr - wx) / W, (wb - wy) / H)
+        return (grad, colf, hb, W, H, (wr - wx) / W, (wb - wy) / H)
 
     def analyze(mp, skip=None):
-        grad, colf, W, H, sx, sy = mp
+        grad, colf, hb, W, H, sx, sy = mp
         NW = (W + 1) * (H + 1)
         tot = [0.0] * NW
         totc = [0.0] * NW
@@ -2786,11 +2789,31 @@ def hud_overlay_tk():
             if bb is not None:
                 res.append((bb, wx + int(bx * sx), wy + int(by * sy), pw, ph))
         # реклама: отдельный поиск по баннерным плиткам (размеры типовых блоков)
+        def ad_like(x0, y0, cw, ch):
+            # одноцветная UI-шпанга (вкладки/тулбар) — не реклама:
+            # у баннера обычно несколько разных оттенков; фильтр v21d
+            chroma = 0
+            cnt = {}
+            for y in range(y0, min(y0 + ch, H)):
+                base = y * W
+                for x in range(x0, min(x0 + cw, W)):
+                    hbi = hb[base + x]
+                    if hbi >= 0:
+                        chroma += 1
+                        cnt[hbi] = cnt.get(hbi, 0) + 1
+            if chroma < 20:
+                return False
+            if chroma / float(cw * ch) < 0.30:
+                return False
+            dom = max(cnt.values()) / float(chroma)
+            buckets = sum(1 for v in cnt.values() if v / float(chroma) >= 0.10)
+            return dom <= 0.85 and buckets >= 2
+
         for tw, th in TILES:
             cw, ch = max(3, int(tw / sx)), max(2, int(th / sy))
             if cw + 2 > W or ch + 2 > H:
                 continue
-            ac, ax0, ay0 = None, 0, 0
+            cands = []
             for y0 in range(1, H - ch, 2):
                 for x0 in range(1, W - cw, 2):
                     if skip:
@@ -2798,10 +2821,13 @@ def hud_overlay_tk():
                         if abs(ax - skip[0]) < 40 and abs(ay - skip[1]) < 40:
                             continue
                     va = win(x0, y0, cw, ch, totc) / (cw * ch)
-                    if ac is None or va > ac:
-                        ac, ax0, ay0 = va, x0, y0
-            if ac is not None and ac >= AD_TH:
-                ads.append((ac, wx + int(ax0 * sx), wy + int(ay0 * sy), tw, th))
+                    if va >= AD_TH:
+                        cands.append((va, x0, y0))
+            cands.sort(key=lambda t: -t[0])
+            for va, x0, y0 in cands[:25]:
+                if ad_like(x0, y0, cw, ch):
+                    ads.append((va, wx + int(x0 * sx), wy + int(y0 * sy), tw, th))
+                    break
         ads.sort(key=lambda t: -t[0])
 
         def zone_busy(x, y, w, h):
@@ -3087,6 +3113,7 @@ def hud_overlay_tk():
 
     cf = [click_fac()]
     hook_tid = [0]
+    hook_keep = [None]
 
     def mouse_loop():
         import ctypes
@@ -3127,7 +3154,8 @@ def hud_overlay_tk():
         if not hh:
             _hud_log("mouse hook не встал")
             return
-        hook_tid[0] = u.GetCurrentThreadId()
+        hook_keep[0] = _proc  # ссылка на колбэк: без неё GC убивает активный хук
+        hook_tid[0] = ctypes.windll.kernel32.GetCurrentThreadId()
         msg = wt.MSG()
         while u.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
             pass
