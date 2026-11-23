@@ -1403,7 +1403,7 @@ VOICE_STOP = False
 GUI_SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gui_settings.json")
 OVERLAY_STOP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hud.stop")
 HUD_LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hud.log")
-APP_VERSION = "v21-tk"
+APP_VERSION = "v21c-tk"
 
 
 def _hud_log(msg):
@@ -3086,6 +3086,7 @@ def hud_overlay_tk():
             return 1.0
 
     cf = [click_fac()]
+    hook_tid = [0]
 
     def mouse_loop():
         import ctypes
@@ -3099,6 +3100,17 @@ def hud_overlay_tk():
 
         LRESULT = ctypes.c_ssize_t
         HOOKPROC = ctypes.WINFUNCTYPE(LRESULT, ctypes.c_int, wt.WPARAM, wt.LPARAM)
+        # ВАЖНО (v21c): без argtypes ctypes передаёт lParam (64-битный
+        # указатель) как c_int -> OverflowError на каждом событии мыши,
+        # хук не вызывал CallNextHookEx и душ системный ввод мыши.
+        u.CallNextHookEx.restype = LRESULT
+        u.CallNextHookEx.argtypes = [ctypes.c_void_p, ctypes.c_int,
+                                     wt.WPARAM, wt.LPARAM]
+        u.UnhookWindowsHookEx.restype = wt.BOOL
+        u.UnhookWindowsHookEx.argtypes = [ctypes.c_void_p]
+        u.SetWindowsHookExW.restype = ctypes.c_void_p
+        u.SetWindowsHookExW.argtypes = [ctypes.c_int, HOOKPROC,
+                                        ctypes.c_void_p, wt.DWORD]
 
         def proc(nCode, wParam, lParam):
             try:
@@ -3106,17 +3118,20 @@ def hud_overlay_tk():
                     ms = MSLLHOOKSTRUCT.from_address(lParam)
                     click_pos[0], click_pos[1] = ms.pt.x, ms.pt.y
                     click_flag[0] = time.time()
+                return u.CallNextHookEx(None, nCode, wParam, lParam)
             except Exception:
-                pass
-            return u.CallNextHookEx(None, nCode, wParam, lParam)
+                return 0
 
         _proc = HOOKPROC(proc)
-        if not u.SetWindowsHookExW(14, _proc, None, 0):  # WH_MOUSE_LL
+        hh = u.SetWindowsHookExW(14, _proc, None, 0)  # WH_MOUSE_LL
+        if not hh:
             _hud_log("mouse hook не встал")
             return
+        hook_tid[0] = u.GetCurrentThreadId()
         msg = wt.MSG()
         while u.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
             pass
+        u.UnhookWindowsHookEx(hh)
 
     threading.Thread(target=mouse_loop, daemon=True).start()
 
@@ -3162,6 +3177,8 @@ def hud_overlay_tk():
                 pass
             if thread_id[0]:
                 ctypes.windll.user32.PostThreadMessageW(thread_id[0], 0x0012, 0, 0)
+            if hook_tid[0]:
+                ctypes.windll.user32.PostThreadMessageW(hook_tid[0], 0x0012, 0, 0)
             root.destroy()
             return
         root.after(400, poll)
