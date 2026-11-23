@@ -1403,7 +1403,7 @@ VOICE_STOP = False
 GUI_SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gui_settings.json")
 OVERLAY_STOP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hud.stop")
 HUD_LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hud.log")
-APP_VERSION = "v20b-tk"
+APP_VERSION = "v21-tk"
 
 
 def _hud_log(msg):
@@ -2716,12 +2716,13 @@ def hud_overlay_tk():
             pass
     SIZES = [(380, 500), (380, 440), (320, 420), (300, 360)]
     BUSY_OK = 3.0
+    AD_TH = 22.0
     scan_warn = [False]
 
     def grad_map():
         try:
             from PIL import Image, ImageGrab
-            img = ImageGrab.grab(bbox=(wx, wy, wr, wb)).convert("L")
+            img = ImageGrab.grab(bbox=(wx, wy, wr, wb)).convert("RGB")
         except Exception as exc:
             if not scan_warn[0]:
                 scan_warn[0] = True
@@ -2731,32 +2732,44 @@ def hud_overlay_tk():
         W = 96
         H = max(28, int(W * img.height / max(1, img.width)))
         img = img.resize((W, H))
-        px = list(img.getdata())
+        ppr = list(img.getdata())
         grad = [0.0] * (W * H)
+        colf = [0.0] * (W * H)
+        lum = [0.0] * (W * H)
+        for i, p in enumerate(ppr):
+            r, g, b = p[0], p[1], p[2]
+            colf[i] = float(max(r, g, b) - min(r, g, b))
+            lum[i] = (r * 3 + g * 6 + b) / 10.0
         for y in range(1, H):
             row = y * W
             for x in range(1, W):
                 i = row + x
-                grad[i] = abs(px[i] - px[i - 1]) + abs(px[i] - px[i - W])
-        return (grad, W, H, (wr - wx) / W, (wb - wy) / H)
+                grad[i] = abs(lum[i] - lum[i - 1]) + abs(lum[i] - lum[i - W])
+        return (grad, colf, W, H, (wr - wx) / W, (wb - wy) / H)
 
     def analyze(mp, skip=None):
-        grad, W, H, sx, sy = mp
-        tot = [0.0] * ((W + 1) * (H + 1))
+        grad, colf, W, H, sx, sy = mp
+        NW = (W + 1) * (H + 1)
+        tot = [0.0] * NW
+        totc = [0.0] * NW
         for y in range(1, H + 1):
             prev, row, gbase = (y - 1) * (W + 1), y * (W + 1), (y - 1) * W
-            rs = 0.0
+            rs = rc = 0.0
             for x in range(1, W + 1):
-                rs += grad[gbase + x - 1]
+                gi = gbase + x - 1
+                rs += grad[gi]
+                rc += colf[gi]
                 tot[row + x] = tot[prev + x] + rs
+                totc[row + x] = totc[prev + x] + rc
 
-        def win(x0, y0, cw, ch):
-            return (tot[(y0 + ch) * (W + 1) + x0 + cw]
-                    - tot[y0 * (W + 1) + x0 + cw]
-                    - tot[(y0 + ch) * (W + 1) + x0]
-                    + tot[y0 * (W + 1) + x0])
+        def win(x0, y0, cw, ch, t):
+            return (t[(y0 + ch) * (W + 1) + x0 + cw]
+                    - t[y0 * (W + 1) + x0 + cw]
+                    - t[(y0 + ch) * (W + 1) + x0]
+                    + t[y0 * (W + 1) + x0])
 
-        res = []
+        TILES = [(360, 90), (300, 250), (320, 50)]
+        res, ads = [], []
         for pw, ph in SIZES:
             cw, ch = max(4, int(pw / sx)), max(4, int(ph / sy))
             if cw + 6 > W or ch + 6 > H:
@@ -2767,20 +2780,38 @@ def hud_overlay_tk():
                     ox, oy = wx + int(x0 * sx), wy + int(y0 * sy)
                     if skip and abs(ox - skip[0]) < 40 and abs(oy - skip[1]) < 40:
                         continue
-                    v = win(x0, y0, cw, ch) / (cw * ch)
+                    v = win(x0, y0, cw, ch, tot) / (cw * ch)
                     if bb is None or v < bb:
                         bb, bx, by = v, x0, y0
             if bb is not None:
                 res.append((bb, wx + int(bx * sx), wy + int(by * sy), pw, ph))
+        # реклама: отдельный поиск по баннерным плиткам (размеры типовых блоков)
+        for tw, th in TILES:
+            cw, ch = max(3, int(tw / sx)), max(2, int(th / sy))
+            if cw + 2 > W or ch + 2 > H:
+                continue
+            ac, ax0, ay0 = None, 0, 0
+            for y0 in range(1, H - ch, 2):
+                for x0 in range(1, W - cw, 2):
+                    if skip:
+                        ax, ay = wx + int(x0 * sx), wy + int(y0 * sy)
+                        if abs(ax - skip[0]) < 40 and abs(ay - skip[1]) < 40:
+                            continue
+                    va = win(x0, y0, cw, ch, totc) / (cw * ch)
+                    if ac is None or va > ac:
+                        ac, ax0, ay0 = va, x0, y0
+            if ac is not None and ac >= AD_TH:
+                ads.append((ac, wx + int(ax0 * sx), wy + int(ay0 * sy), tw, th))
+        ads.sort(key=lambda t: -t[0])
 
         def zone_busy(x, y, w, h):
             x0 = min(max(0, int((x - wx) / sx)), W - 2)
             y0 = min(max(0, int((y - wy) / sy)), H - 2)
             cw = max(4, min(W - 1 - x0, int(w / sx)))
             ch = max(4, min(H - 1 - y0, int(h / sy)))
-            return win(x0, y0, cw, ch) / (cw * ch)
+            return win(x0, y0, cw, ch, tot) / (cw * ch)
 
-        return res, zone_busy
+        return res, zone_busy, ads
 
     def pick_from(res):
         for b, x, y, w, h in sorted(res, key=lambda t: -t[3] * t[4]):
@@ -2791,6 +2822,7 @@ def hud_overlay_tk():
     pos = [wr - PW - 18, wb - PH - 18]
     sizes = [PW, PH]
     baseline = [999.0]
+    ad_on = [None]
     root.geometry(f"{PW}x{PH}+{pos[0]}+{pos[1]}")
 
     canvas = tk.Canvas(root, width=PW, height=PH, bg=TC, highlightthickness=0)
@@ -2953,15 +2985,35 @@ def hud_overlay_tk():
         if mp is None:
             return
         skip = (pos[0], pos[1]) if mode != "init" else None
-        res, _zb = analyze(mp, skip=skip)
-        if not res:
+        res, _zb, ads = analyze(mp, skip=skip)
+        if not res and not ads:
             return
-        b, x, y, w, h = pick_from(res)
-        if mode == "auto":
-            _hud_log(f"rescan: best {w}x{h} busy={b:.1f}@+{x}+{y}, baseline={baseline[0]:.1f}")
-            if not (b <= BUSY_OK and b + 1.0 < baseline[0]):
-                return
-        baseline[0] = b
+        x = y = w = h = None
+        on_ad = (ad_on[0] is not None and abs(pos[0] - ad_on[0][0]) < 60
+                 and abs(pos[1] - ad_on[0][1]) < 60)
+        # 1) реклама: накрываем самый пёстрый баннер (если ещё не на нём)
+        if ads and not (on_ad and mode in ("auto", "click")):
+            a, bx, by, bw, bh = ads[0]
+            full = [s for s in SIZES if s[0] >= bw and s[1] >= bh]
+            w, h = min(full, key=lambda s: s[0] * s[1]) if full else SIZES[-1]
+            x = bx if bw <= w else bx + (bw - w) // 2
+            y = by if bh <= h else by + (bh - h) // 2
+            x = max(wx + 4, min(x, wr - w - 4))
+            y = max(wy + 4, min(y, wb - h - 4))
+            _hud_log(f"ad zone: colorful={a:.1f} {bw}x{bh} at +{bx}+{by} -> panel {w}x{h} at +{x}+{y}")
+            baseline[0] = 0.0
+            ad_on[0] = (x, y)
+        # 2) пустое место
+        elif res:
+            b, x, y, w, h = pick_from(res)
+            ad_on[0] = None
+            if mode in ("auto", "click"):
+                _hud_log(f"rescan: best {w}x{h} busy={b:.1f}@+{x}+{y}, baseline={baseline[0]:.1f}")
+                if not (b <= BUSY_OK and b + 1.0 < baseline[0]):
+                    return
+            baseline[0] = b
+        else:
+            return
         pos[0], pos[1] = x, y
         sizes[0], sizes[1] = w, h
         if not compact[0]:
@@ -3022,6 +3074,52 @@ def hud_overlay_tk():
 
     threading.Thread(target=hotkey_loop, daemon=True).start()
 
+    click_flag = [0.0]
+    click_pos = [0, 0]
+    last_rescan = [0.0]
+
+    def click_fac():
+        try:
+            dpi = root.winfo_fpixels("1i")
+            return 96.0 / dpi if dpi > 96 else 1.0
+        except Exception:
+            return 1.0
+
+    cf = [click_fac()]
+
+    def mouse_loop():
+        import ctypes
+        import ctypes.wintypes as wt
+        u = ctypes.windll.user32
+
+        class MSLLHOOKSTRUCT(ctypes.Structure):
+            _fields_ = [("pt", wt.POINT), ("mouseData", wt.DWORD),
+                        ("flags", wt.DWORD), ("time", wt.DWORD),
+                        ("dwExtraInfo", ctypes.c_void_p)]
+
+        LRESULT = ctypes.c_ssize_t
+        HOOKPROC = ctypes.WINFUNCTYPE(LRESULT, ctypes.c_int, wt.WPARAM, wt.LPARAM)
+
+        def proc(nCode, wParam, lParam):
+            try:
+                if nCode == 0 and wParam == 0x0202:  # WM_LBUTTONUP
+                    ms = MSLLHOOKSTRUCT.from_address(lParam)
+                    click_pos[0], click_pos[1] = ms.pt.x, ms.pt.y
+                    click_flag[0] = time.time()
+            except Exception:
+                pass
+            return u.CallNextHookEx(None, nCode, wParam, lParam)
+
+        _proc = HOOKPROC(proc)
+        if not u.SetWindowsHookExW(14, _proc, None, 0):  # WH_MOUSE_LL
+            _hud_log("mouse hook не встал")
+            return
+        msg = wt.MSG()
+        while u.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+            pass
+
+    threading.Thread(target=mouse_loop, daemon=True).start()
+
     ticks = [0]
 
     def poll():
@@ -3031,6 +3129,24 @@ def hud_overlay_tk():
                 rerack("manual")
             except Exception:
                 pass
+        now = time.time()
+        if click_flag[0] and now - click_flag[0] >= 1.5 and now - last_rescan[0] >= 4.0:
+            click_flag[0] = 0.0
+            last_rescan[0] = now
+            if not busy[0]:
+                cxp, cyp = click_pos
+                cw2, ch2 = (CPW, CPH) if compact[0] else (sizes[0], sizes[1])
+                inside = False
+                for fac in (1.0, cf[0]):
+                    ax, ay = cxp * fac, cyp * fac
+                    if pos[0] - 8 <= ax <= pos[0] + cw2 + 8 and pos[1] - 8 <= ay <= pos[1] + ch2 + 8:
+                        inside = True
+                        break
+                if not inside:
+                    try:
+                        rerack("click")
+                    except Exception:
+                        pass
         ticks[0] += 1
         if ticks[0] >= 75:
             ticks[0] = 0
@@ -3056,7 +3172,7 @@ def hud_overlay_tk():
         pass
     poll()
     frame()
-    _hud_log(f"tk overlay v20 shown {sizes[0]}x{sizes[1]} at +{pos[0]}+{pos[1]}")
+    _hud_log(f"tk overlay v21 shown {sizes[0]}x{sizes[1]} at +{pos[0]}+{pos[1]}")
     root.mainloop()
 
 
