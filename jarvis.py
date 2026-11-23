@@ -1404,7 +1404,7 @@ GUI_SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gu
 OVERLAY_STOP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hud.stop")
 HUD_LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hud.log")
 HUD_MEM_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hud_memory.json")
-APP_VERSION = "v21g-tk"
+APP_VERSION = "v21h-tk"
 
 
 def _hud_log(msg):
@@ -2870,18 +2870,20 @@ def hud_overlay_tk():
         return res, zone_busy, ads
 
     def pick_from(res):
-        # v21f: из одинаково пустых — ближе к текущему месту и без
-        # плохой истории (зоны, откуда панель уезжала, штрафуются памятью)
+        # v21h: размер подбирается ПОД пустое пространство — берём САМУЮ
+        # большую форму, которая влезает в пустое место; из одинаковых
+        # по размеру — ближе к текущему месту и без плохой истории
+        # (зоны, откуда панель уезжала, штрафуются памятью)
+        cur = (pos[0], pos[1])
+
         def pen(r):
             return max(0.0, spots.get(mem_key(r[1], r[2]), 0.0)) * 1.5
 
-        ok = [r for r in res if r[0] <= BUSY_OK]
+        ok = [r for r in res if r[0] + pen(r) <= BUSY_OK]
         if ok:
-            bmin = min(r[0] for r in ok)
-            near = [r for r in ok if r[0] <= bmin + 0.8]
-            cur = (pos[0], pos[1])
-            return max(near, key=lambda r: (-(abs(r[1] - cur[0]) + abs(r[2] - cur[1])) - pen(r),
-                                            r[3] * r[4]))
+            amax = max(r[3] * r[4] for r in ok)
+            big = [r for r in ok if r[3] * r[4] == amax]
+            return min(big, key=lambda r: abs(r[1] - cur[0]) + abs(r[2] - cur[1]))
         return min(res, key=lambda r: (r[0] + pen(r), r[3] * r[4]))
 
     pos = [wr - PW - 18, wb - PH - 18]
@@ -2891,6 +2893,7 @@ def hud_overlay_tk():
     last_move = [0.0]
     arrived = [None, 0.0]
     ad_ban = {}
+    ad_votes = {}   # v21h: голоса «рекламы» для двойного подтверждения
     # v21f память мест (бандит-эмуляция без ИИ): плохие зоны штрафуются
     spots = {}
     try:
@@ -3090,6 +3093,20 @@ def hud_overlay_tk():
         nowts = time.time()
         ads = [t for t in ads
                if nowts - ad_ban.get(mem_key(t[1], t[2]), -1e9) > 240.0]
+        # v21h: «реклама» должна подтвердиться в двух сканах подряд —
+        # одиночные пёстрые пятна интерфейса панель больше не двигают
+        # (нарочный запрос init/manual срабатывает сразу)
+        _need = 1 if mode in ("init", "manual") else 2
+        for _t in list(ads):
+            _k = mem_key(_t[1], _t[2])
+            _p = ad_votes.get(_k, (0, 0.0))
+            _c = _p[0] + 1 if nowts - _p[1] < 180.0 else 1
+            ad_votes[_k] = (_c, nowts)
+            if _c < _need:
+                ads.remove(_t)
+        for _k in list(ad_votes):
+            if nowts - ad_votes[_k][1] > 180.0:
+                del ad_votes[_k]
         if not res and not ads:
             return
 
@@ -3167,11 +3184,14 @@ def hud_overlay_tk():
                     # пустое место (b <= BUSY_OK), а не по старому гистерезису
                     if b > BUSY_OK:
                         return
-                elif not (b <= BUSY_OK and (x, y) == (pos[0], pos[1])
-                          and w * h > sizes[0] * sizes[1]):
-                    # рост размера на текущем месте разрешён всегда,
-                    # иначе только если новое место ощутимо пустее
-                    if not (b <= BUSY_OK and b + 1.0 < baseline[0]):
+                else:
+                    # v21h: перезд, если (а) растём в заведомо пустое место
+                    # (размер под пустоту), (б) новое место ощутимо пустее,
+                    # (в) текущее место тесное, а найдено пустое
+                    grow = (w * h > sizes[0] * sizes[1])
+                    if not (b <= BUSY_OK and
+                            (grow or b + 1.0 < baseline[0]
+                             or baseline[0] > BUSY_OK)):
                         return
             if ad_on[0] is not None:
                 # v21f: покинули тайл «рекламы» — не возвращаемся на него 4 минуты
