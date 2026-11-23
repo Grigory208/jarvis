@@ -6,5 +6,6 @@ usage.json
 gui_settings.json
 custom_commands.json
 hud.log
+hud.chat
 hud.stop
 hud_memory.json
