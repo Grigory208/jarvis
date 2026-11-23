@@ -1403,7 +1403,7 @@ VOICE_STOP = False
 GUI_SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gui_settings.json")
 OVERLAY_STOP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hud.stop")
 HUD_LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hud.log")
-APP_VERSION = "v21d-tk"
+APP_VERSION = "v21e-tk"
 
 
 def _hud_log(msg):
@@ -2716,7 +2716,9 @@ def hud_overlay_tk():
             pass
     SIZES = [(380, 500), (380, 440), (320, 420), (300, 360)]
     BUSY_OK = 3.0
-    AD_TH = 28.0
+    AD_TH = 28.0    # цветность плитки
+    AD_GTH = 4.0    # текстура внутри (текст/графика, не плоская заливка)
+    AD_CTH = 10.0   # контраст с кольцом вокруг (баннер выделяется из фона)
     scan_warn = [False]
 
     def grad_map():
@@ -2825,9 +2827,22 @@ def hud_overlay_tk():
                         cands.append((va, x0, y0))
             cands.sort(key=lambda t: -t[0])
             for va, x0, y0 in cands[:25]:
-                if ad_like(x0, y0, cw, ch):
-                    ads.append((va, wx + int(x0 * sx), wy + int(y0 * sy), tw, th))
-                    break
+                if not ad_like(x0, y0, cw, ch):
+                    continue
+                # v21e: внутри баннера есть текст/графика — не плоская заливка
+                vg = win(x0, y0, cw, ch, tot) / float(cw * ch)
+                if vg < AD_GTH:
+                    continue
+                # v21e: баннер выделяется из фона — вокруг него кольцо бледнее
+                px0, py0 = max(0, x0 - 8), max(0, y0 - 8)
+                px1, py1 = min(W, x0 + cw + 8), min(H, y0 + ch + 8)
+                rarea = (px1 - px0) * (py1 - py0) - cw * ch
+                rcol = (win(px0, py0, px1 - px0, py1 - py0, totc)
+                        - va * cw * ch) / max(1.0, float(rarea))
+                if va - rcol < AD_CTH:
+                    continue
+                ads.append((va, wx + int(x0 * sx), wy + int(y0 * sy), tw, th))
+                break
         ads.sort(key=lambda t: -t[0])
 
         def zone_busy(x, y, w, h):
@@ -2840,10 +2855,16 @@ def hud_overlay_tk():
         return res, zone_busy, ads
 
     def pick_from(res):
-        for b, x, y, w, h in sorted(res, key=lambda t: -t[3] * t[4]):
-            if b <= BUSY_OK:
-                return b, x, y, w, h
-        return min(res, key=lambda t: (t[0], t[3] * t[4]))
+        # v21e: среди одинаково пустых расстоянием минимум-вариантов
+        # предпочитаем вариант ближе к текущему месту (анти-блуждание)
+        ok = [r for r in res if r[0] <= BUSY_OK]
+        if ok:
+            bmin = min(r[0] for r in ok)
+            near = [r for r in ok if r[0] <= bmin + 0.8]
+            cur = (pos[0], pos[1])
+            return max(near, key=lambda r: (-(abs(r[1] - cur[0]) + abs(r[2] - cur[1])),
+                                            r[3] * r[4]))
+        return min(res, key=lambda r: (r[0], r[3] * r[4]))
 
     pos = [wr - PW - 18, wb - PH - 18]
     sizes = [PW, PH]
@@ -2868,6 +2889,7 @@ def hud_overlay_tk():
             canvas.delete(iid)
         del r_ids[:]
         w, h = sizes
+        canvas.config(width=w, height=h)
         r_ids.extend(rounded(0, 0, w, h, 14, EDGE))
         r_ids.extend(rounded(1, 1, w - 1, h - 1, 13, PANEL))
         for iid in r_ids:
@@ -3027,16 +3049,28 @@ def hud_overlay_tk():
             x = max(wx + 4, min(x, wr - w - 4))
             y = max(wy + 4, min(y, wb - h - 4))
             _hud_log(f"ad zone: colorful={a:.1f} {bw}x{bh} at +{bx}+{by} -> panel {w}x{h} at +{x}+{y}")
-            baseline[0] = 0.0
+            # v21e: под панелью баннер не измерить — baseline высокий, съезд
+            # по правилу ветки 2 (нашлось заведомо пустое место)
+            baseline[0] = 90.0
             ad_on[0] = (x, y)
         # 2) пустое место
         elif res:
             b, x, y, w, h = pick_from(res)
-            ad_on[0] = None
             if mode in ("auto", "click"):
-                _hud_log(f"rescan: best {w}x{h} busy={b:.1f}@+{x}+{y}, baseline={baseline[0]:.1f}")
-                if not (b <= BUSY_OK and b + 1.0 < baseline[0]):
-                    return
+                _hud_log(f"rescan: cur {sizes[0]}x{sizes[1]}@+{pos[0]}+{pos[1]}, "
+                         f"best {w}x{h} busy={b:.1f}@+{x}+{y}")
+                if ad_on[0] is not None:
+                    # v21e: сидим на баннере — съезжаем только на ОЧЕВИДНО
+                    # пустое место (b <= BUSY_OK), а не по старому гистерезису
+                    if b > BUSY_OK:
+                        return
+                elif not (b <= BUSY_OK and (x, y) == (pos[0], pos[1])
+                          and w * h > sizes[0] * sizes[1]):
+                    # рост размера на текущем месте разрешён всегда,
+                    # иначе только если новое место ощутимо пустее
+                    if not (b <= BUSY_OK and b + 1.0 < baseline[0]):
+                        return
+            ad_on[0] = None
             baseline[0] = b
         else:
             return
