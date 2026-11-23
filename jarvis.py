@@ -1250,7 +1250,10 @@ def main_text():
             main_voice()
             break
 
-        _, history = respond(query, history, engine)
+        push_chat_event("you", query)
+        _reply, history = respond(query, history, engine)
+        if _reply:
+            push_chat_event("j", _reply)
         pq, why = maybe_predict()
         if pq:
             print(f"[ прогноз: «{pq}» ({why}) — «да», чтобы выполнить ]")
@@ -1340,8 +1343,11 @@ def main_voice():
                 if command in EXIT_WORDS:
                     speak(engine, f"Всего наилучшего, {MGMT}. Отключаюсь.")
                     break
+                push_chat_event("you", command)
                 reply, history = respond(command, history, engine)
-                if reply is None:
+                if reply:
+                    push_chat_event("j", reply)
+                else:
                     speak(engine, f"Не смог выполнить запрос, {MGMT}.")
     except KeyboardInterrupt:
         pass
@@ -1402,9 +1408,19 @@ ORB_STATE = "idle"
 VOICE_STOP = False
 GUI_SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gui_settings.json")
 OVERLAY_STOP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hud.stop")
+HUD_CHAT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hud.chat")
+
+
+def push_chat_event(who, text):
+    """v22: событие чата для всплывающего HUD (JSON Lines в hud.chat)."""
+    try:
+        with open(HUD_CHAT_FILE, "a", encoding="utf-8") as _f:
+            _f.write(json.dumps({"who": who, "text": str(text)[:2000]}) + "\n")
+    except Exception:
+        pass
 HUD_LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hud.log")
 HUD_MEM_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hud_memory.json")
-APP_VERSION = "v21i-tk"
+APP_VERSION = "v22a-tk"
 
 
 def _hud_log(msg):
@@ -1864,6 +1880,7 @@ def gui():
     def send(text):
         info_override[0] = "обрабатываю: " + text
         orb_notify("think")
+        push_chat_event("you", text)
 
         def worker():
             try:
@@ -1871,6 +1888,7 @@ def gui():
                 history[0] = new_hist
                 if reply:
                     last_action[0] = "Готово: " + reply
+                    push_chat_event("j", reply)
                 else:
                     last_action[0] = "Не смог выполнить, сэр"
                 pq, why = maybe_predict()
@@ -2720,6 +2738,11 @@ def hud_overlay_tk():
     AD_TH = 28.0    # цветность плитки
     AD_GTH = 4.0    # текстура внутри (текст/графика, не плоская заливка)
     AD_CTH = 10.0   # контраст с кольцом вокруг (баннер выделяется из фона)
+    try:
+        if os.path.exists(HUD_CHAT_FILE):
+            os.remove(HUD_CHAT_FILE)
+    except OSError:
+        pass
     scan_warn = [False]
 
     def grad_map():
@@ -2958,7 +2981,7 @@ def hud_overlay_tk():
     sub_id = canvas.create_text(104, 15, text=f"голограмма · чат · {APP_VERSION}",
                                 fill=DIM, anchor="w", font=("Segoe UI", 9))
     hint_id = canvas.create_text(104, 30,
-                                 text="клик по шапке — свернуть · Ctrl+Alt+H — фоновое место",
+                                 text="Ctrl+Alt+J — чат · Ctrl+Alt+H — фоновое место · клик шапки — свернуть",
                                  fill=DIM, anchor="w", font=("Segoe UI", 8))
     close_id = canvas.create_text(PW - 26, 24, text="✕", fill="#ff9c9c", font=("Segoe UI", 10))
 
@@ -3070,6 +3093,8 @@ def hud_overlay_tk():
         apply_place()
 
     def on_click(ev):
+        if chat_visible[0]:
+            chat_hide_at[0] = time.time() + 15.0
         if compact[0]:
             if ev.x > CPW - 22 and ev.y < 22:
                 root.destroy()
@@ -3081,6 +3106,61 @@ def hud_overlay_tk():
             show_compact(True)
         else:
             entry.focus_set()
+
+    chat_visible = [False]
+    chat_hide_at = [0.0]
+    chat_flag = [False]
+
+    def show_chat_popup():
+        # v22: чат всплывает из-под нижнего края в левый угол (обычно самый
+        # пустой), полупрозрачный; вызывается на вопрос/ответ/хоткей
+        chat_hide_at[0] = time.time() + 15.0
+        if chat_visible[0]:
+            return
+        chat_visible[0] = True
+        if compact[0]:
+            show_compact(False)
+        try:
+            root.attributes("-alpha", 0.85)
+        except tk.TclError:
+            pass
+        h = sizes[1]
+        tx = wx + 10
+        ty = max(wy + 10, wb - h - 10)
+        pos[0], pos[1] = tx, ty
+        arrived[0], arrived[1] = (tx, ty), time.time()
+        last_move[0] = time.time()
+        apply_place()
+        y0 = wb + h  # полностью за нижним краем
+        steps = 10
+
+        def _rise(st=[0]):
+            st[0] += 1
+            ease = 1.0 - (1.0 - st[0] / steps) ** 3
+            root.geometry(f"{sizes[0]}x{h}+{tx}+{int(y0 + (ty - y0) * ease)}")
+            if st[0] < steps:
+                root.after(33, _rise)
+
+        _rise()
+        entry.focus_set()
+
+    def hide_chat(now=False):
+        if not chat_visible[0]:
+            return
+        if not now and (busy[0] or state[0] != "idle"):
+            chat_hide_at[0] = time.time() + 10.0  # джарвис говорит — не прятать
+            return
+        chat_visible[0] = False
+        try:
+            root.attributes("-alpha", 1.0)
+        except tk.TclError:
+            pass
+        show_compact(True)
+
+    def _entry_typed(_e):
+        chat_hide_at[0] = time.time() + 15.0
+
+    entry.bind("<Key>", _entry_typed)
 
     def fit_at(zb, px, py, cw0, ch0):
         # v21i: самая большая форма, влезающая в пустоту у точки (px,py);
@@ -3289,8 +3369,7 @@ def hud_overlay_tk():
                     if msg.wParam == 2:
                         move_flag[0] = True
                     else:
-                        stop_flag[0] = True
-                        break
+                        chat_flag[0] = True
             u.UnregisterHotKey(None, 1)
             u.UnregisterHotKey(None, 2)
 
@@ -3368,8 +3447,30 @@ def hud_overlay_tk():
                 rerack("manual")
             except Exception:
                 pass
+        if chat_flag[0]:
+            chat_flag[0] = False
+            if chat_visible[0]:
+                hide_chat(now=True)
+            else:
+                show_chat_popup()
+                _hud_log("chat popup: open (Ctrl+Alt+J)")
+        if os.path.exists(HUD_CHAT_FILE):
+            try:
+                with open(HUD_CHAT_FILE, encoding="utf-8") as _f:
+                    _lines = [ln for ln in _f.read().splitlines() if ln.strip()]
+                os.remove(HUD_CHAT_FILE)
+                for ln in _lines:
+                    ev = json.loads(ln)
+                    chat_add("you" if ev.get("who") == "you" else "j",
+                             str(ev.get("text", "")))
+                    show_chat_popup()
+            except Exception:
+                pass
         now = time.time()
-        if click_flag[0] and now - click_flag[0] >= 1.5 and now - last_rescan[0] >= 4.0:
+        if chat_visible[0] and now > chat_hide_at[0]:
+            hide_chat()
+        if (click_flag[0] and now - click_flag[0] >= 1.5
+                and now - last_rescan[0] >= 4.0 and not chat_visible[0]):
             click_flag[0] = 0.0
             last_rescan[0] = now
             if not busy[0]:
@@ -3389,7 +3490,7 @@ def hud_overlay_tk():
         ticks[0] += 1
         if ticks[0] >= 75:
             ticks[0] = 0
-            if not busy[0]:
+            if not busy[0] and not chat_visible[0]:
                 try:
                     rerack("auto")
                 except Exception:
