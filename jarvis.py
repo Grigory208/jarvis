@@ -1403,7 +1403,8 @@ VOICE_STOP = False
 GUI_SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gui_settings.json")
 OVERLAY_STOP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hud.stop")
 HUD_LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hud.log")
-APP_VERSION = "v21e-tk"
+HUD_MEM_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hud_memory.json")
+APP_VERSION = "v21f-tk"
 
 
 def _hud_log(msg):
@@ -2734,13 +2735,14 @@ def hud_overlay_tk():
         W = 96
         H = max(28, int(W * img.height / max(1, img.width)))
         img = img.resize((W, H))
-        ppr = list(img.getdata())
+        data = img.tobytes()
         grad = [0.0] * (W * H)
         colf = [0.0] * (W * H)
         lum = [0.0] * (W * H)
         hb = [-1] * (W * H)
-        for i, p in enumerate(ppr):
-            r, g, b = p[0], p[1], p[2]
+        for i in range(W * H):
+            o = i * 3
+            r, g, b = data[o], data[o + 1], data[o + 2]
             colf[i] = float(max(r, g, b) - min(r, g, b))
             lum[i] = (r * 3 + g * 6 + b) / 10.0
             if colf[i] >= 60.0:
@@ -2855,21 +2857,45 @@ def hud_overlay_tk():
         return res, zone_busy, ads
 
     def pick_from(res):
-        # v21e: среди одинаково пустых расстоянием минимум-вариантов
-        # предпочитаем вариант ближе к текущему месту (анти-блуждание)
+        # v21f: из одинаково пустых — ближе к текущему месту и без
+        # плохой истории (зоны, откуда панель уезжала, штрафуются памятью)
+        def pen(r):
+            return max(0.0, spots.get(mem_key(r[1], r[2]), 0.0)) * 1.5
+
         ok = [r for r in res if r[0] <= BUSY_OK]
         if ok:
             bmin = min(r[0] for r in ok)
             near = [r for r in ok if r[0] <= bmin + 0.8]
             cur = (pos[0], pos[1])
-            return max(near, key=lambda r: (-(abs(r[1] - cur[0]) + abs(r[2] - cur[1])),
+            return max(near, key=lambda r: (-(abs(r[1] - cur[0]) + abs(r[2] - cur[1])) - pen(r),
                                             r[3] * r[4]))
-        return min(res, key=lambda r: (r[0], r[3] * r[4]))
+        return min(res, key=lambda r: (r[0] + pen(r), r[3] * r[4]))
 
     pos = [wr - PW - 18, wb - PH - 18]
     sizes = [PW, PH]
     baseline = [999.0]
     ad_on = [None]
+    last_move = [0.0]
+    arrived = [None, 0.0]
+    ad_ban = {}
+    # v21f память мест (бандит-эмуляция без ИИ): плохие зоны штрафуются
+    spots = {}
+    try:
+        if os.path.exists(HUD_MEM_FILE):
+            with open(HUD_MEM_FILE, encoding="utf-8") as _f:
+                spots = json.load(_f).get("spots", {})
+    except Exception:
+        spots = {}
+
+    def mem_key(x, y):
+        return "%d,%d" % (int(x) // 96, int(y) // 96)
+
+    def save_mem():
+        try:
+            with open(HUD_MEM_FILE, "w", encoding="utf-8") as _f:
+                json.dump({"spots": spots}, _f)
+        except Exception:
+            pass
     root.geometry(f"{PW}x{PH}+{pos[0]}+{pos[1]}")
 
     canvas = tk.Canvas(root, width=PW, height=PH, bg=TC, highlightthickness=0)
@@ -3032,10 +3058,41 @@ def hud_overlay_tk():
         mp = grad_map()
         if mp is None:
             return
+        # v21f: анти-дребезг — после переезда 10 с панель не трогаем
+        if mode in ("auto", "click") and time.time() - last_move[0] < 10.0:
+            return
         skip = (pos[0], pos[1]) if mode != "init" else None
         res, _zb, ads = analyze(mp, skip=skip)
+        # v21f: недавно покинутые тайлы-«реклама» не трогаем 4 минуты
+        nowts = time.time()
+        ads = [t for t in ads
+               if nowts - ad_ban.get(mem_key(t[1], t[2]), -1e9) > 240.0]
         if not res and not ads:
             return
+
+        def ring_busy(zb):
+            # пустота вокруг текущей панели (ring не включает саму панель)
+            x0, y0, w0, h0 = pos[0], pos[1], sizes[0], sizes[1]
+            P = 110
+            zones = []
+            if y0 - P >= wy:
+                zones.append((x0, y0 - P, w0, P))
+            if y0 + h0 + P <= wb:
+                zones.append((x0, y0 + h0, w0, P))
+            if x0 - P >= wx:
+                zones.append((x0 - P, y0, P, h0))
+            if x0 + w0 + P <= wr:
+                zones.append((x0 + w0, y0, P, h0))
+            if not zones:
+                return None
+            ta = tb = 0.0
+            for zx, zy, zw, zh in zones:
+                zw2, zh2 = min(zw, wr - zx), min(zh, wb - zy)
+                if zw2 <= 4 or zh2 <= 4:
+                    continue
+                ta += zw2 * zh2
+                tb += zb(zx, zy, zw2, zh2) * zw2 * zh2
+            return tb / ta if ta > 0 else None
         x = y = w = h = None
         on_ad = (ad_on[0] is not None and abs(pos[0] - ad_on[0][0]) < 60
                  and abs(pos[1] - ad_on[0][1]) < 60)
@@ -3055,6 +3112,23 @@ def hud_overlay_tk():
             ad_on[0] = (x, y)
         # 2) пустое место
         elif res:
+            # v21f: рост формы на месте — кольцо вокруг пустое, а панель сжата
+            if mode == "auto" and not compact[0] and ad_on[0] is None and _zb:
+                rb = ring_busy(_zb)
+                if rb is not None and rb <= 1.2:
+                    try:
+                        ix = SIZES.index((sizes[0], sizes[1]))
+                    except ValueError:
+                        ix = 0
+                    if ix > 0:
+                        nw, nh = SIZES[ix - 1]
+                        sizes[0], sizes[1] = nw, nh
+                        baseline[0] = rb
+                        if not compact[0]:
+                            draw_full_panel()
+                        apply_place()
+                        _hud_log(f"grow-in-place: {nw}x{nh} at +{pos[0]}+{pos[1]}, ring busy={rb:.1f}")
+                        return
             b, x, y, w, h = pick_from(res)
             if mode in ("auto", "click"):
                 _hud_log(f"rescan: cur {sizes[0]}x{sizes[1]}@+{pos[0]}+{pos[1]}, "
@@ -3070,12 +3144,27 @@ def hud_overlay_tk():
                     # иначе только если новое место ощутимо пустее
                     if not (b <= BUSY_OK and b + 1.0 < baseline[0]):
                         return
+            if ad_on[0] is not None:
+                # v21f: покинули тайл «рекламы» — не возвращаемся на него 4 минуты
+                ad_ban[mem_key(ad_on[0][0], ad_on[0][1])] = time.time()
             ad_on[0] = None
             baseline[0] = b
         else:
             return
+        # v21f: уехали с места — обновляем его репутацию в памяти
+        if arrived[0] is not None and arrived[0] != (x, y):
+            dtm = time.time() - arrived[1]
+            ka = mem_key(arrived[0][0], arrived[0][1])
+            if dtm < 25.0:
+                spots[ka] = spots.get(ka, 0.0) - 1.0
+                save_mem()
+            elif dtm > 600.0:
+                spots[ka] = spots.get(ka, 0.0) + 1.0
+                save_mem()
+        arrived[0], arrived[1] = (x, y), time.time()
         pos[0], pos[1] = x, y
         sizes[0], sizes[1] = w, h
+        last_move[0] = time.time()
         if not compact[0]:
             draw_full_panel()
         apply_place()
