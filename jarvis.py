@@ -1404,7 +1404,7 @@ GUI_SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gu
 OVERLAY_STOP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hud.stop")
 HUD_LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hud.log")
 HUD_MEM_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hud_memory.json")
-APP_VERSION = "v21f-tk"
+APP_VERSION = "v21g-tk"
 
 
 def _hud_log(msg):
@@ -2725,7 +2725,9 @@ def hud_overlay_tk():
     def grad_map():
         try:
             from PIL import Image, ImageGrab
-            img = ImageGrab.grab(bbox=(wx, wy, wr, wb)).convert("RGB")
+            # v21g: снимаем ВЕСЬ экран. bbox в виртуальных координатах PIL
+            # трактовал как физические пиксели (DPI 125% -> окно захвата съезжало).
+            img = ImageGrab.grab().convert("RGB")
         except Exception as exc:
             if not scan_warn[0]:
                 scan_warn[0] = True
@@ -2734,6 +2736,11 @@ def hud_overlay_tk():
             return None
         W = 96
         H = max(28, int(W * img.height / max(1, img.width)))
+        # v21g: grab() отдаёт ФИЗИЧЕСКИЕ пиксели, а tkinter живёт в виртуальных
+        # (DPI 125%: виртуал = физ / 1.25). Дальше всё приводим к виртуальным.
+        ow, oh = float(img.width), float(img.height)
+        sx, sy = ow / float(W), oh / float(H)   # физ. px на ячейку сетки
+        kx, ky = dw / ow, dh / oh               # виртуальных px на физ. px
         img = img.resize((W, H))
         data = img.tobytes()
         grad = [0.0] * (W * H)
@@ -2752,10 +2759,16 @@ def hud_overlay_tk():
             for x in range(1, W):
                 i = row + x
                 grad[i] = abs(lum[i] - lum[i - 1]) + abs(lum[i] - lum[i - W])
-        return (grad, colf, hb, W, H, (wr - wx) / W, (wb - wy) / H)
+        return (grad, colf, hb, W, H, sx, sy, kx, ky)
 
     def analyze(mp, skip=None):
-        grad, colf, hb, W, H, sx, sy = mp
+        grad, colf, hb, W, H, sx, sy, kx, ky = mp
+        # v21g: переводы из координат сетки (физ. пиксели) в виртуальные,
+        # в которых живёт tkinter и все зажимы окна
+        def vx_of(c):
+            return int(c * sx * kx)
+        def vy_of(c):
+            return int(c * sy * ky)
         NW = (W + 1) * (H + 1)
         tot = [0.0] * NW
         totc = [0.0] * NW
@@ -2784,14 +2797,14 @@ def hud_overlay_tk():
             bb, bx, by = None, 0, 0
             for y0 in range(2, H - ch - 1, 3):
                 for x0 in range(2, W - cw - 1, 3):
-                    ox, oy = wx + int(x0 * sx), wy + int(y0 * sy)
+                    ox, oy = vx_of(x0), vy_of(y0)
                     if skip and abs(ox - skip[0]) < 40 and abs(oy - skip[1]) < 40:
                         continue
                     v = win(x0, y0, cw, ch, tot) / (cw * ch)
                     if bb is None or v < bb:
                         bb, bx, by = v, x0, y0
             if bb is not None:
-                res.append((bb, wx + int(bx * sx), wy + int(by * sy), pw, ph))
+                res.append((bb, vx_of(bx), vy_of(by), pw, ph))
         # реклама: отдельный поиск по баннерным плиткам (размеры типовых блоков)
         def ad_like(x0, y0, cw, ch):
             # одноцветная UI-шпанга (вкладки/тулбар) — не реклама:
@@ -2821,7 +2834,7 @@ def hud_overlay_tk():
             for y0 in range(1, H - ch, 2):
                 for x0 in range(1, W - cw, 2):
                     if skip:
-                        ax, ay = wx + int(x0 * sx), wy + int(y0 * sy)
+                        ax, ay = vx_of(x0), vy_of(y0)
                         if abs(ax - skip[0]) < 40 and abs(ay - skip[1]) < 40:
                             continue
                     va = win(x0, y0, cw, ch, totc) / (cw * ch)
@@ -2843,15 +2856,15 @@ def hud_overlay_tk():
                         - va * cw * ch) / max(1.0, float(rarea))
                 if va - rcol < AD_CTH:
                     continue
-                ads.append((va, wx + int(x0 * sx), wy + int(y0 * sy), tw, th))
+                ads.append((va, vx_of(x0), vy_of(y0), tw, th))
                 break
         ads.sort(key=lambda t: -t[0])
 
         def zone_busy(x, y, w, h):
-            x0 = min(max(0, int((x - wx) / sx)), W - 2)
-            y0 = min(max(0, int((y - wy) / sy)), H - 2)
-            cw = max(4, min(W - 1 - x0, int(w / sx)))
-            ch = max(4, min(H - 1 - y0, int(h / sy)))
+            x0 = min(max(0, int(x / (sx * kx))), W - 2)
+            y0 = min(max(0, int(y / (sy * ky))), H - 2)
+            cw = max(4, min(W - 1 - x0, int(w / (sx * kx))))
+            ch = max(4, min(H - 1 - y0, int(h / (sy * ky))))
             return win(x0, y0, cw, ch, tot) / (cw * ch)
 
         return res, zone_busy, ads
@@ -2883,7 +2896,13 @@ def hud_overlay_tk():
     try:
         if os.path.exists(HUD_MEM_FILE):
             with open(HUD_MEM_FILE, encoding="utf-8") as _f:
-                spots = json.load(_f).get("spots", {})
+                _m = json.load(_f)
+                spots = _m.get("spots", {})
+                # v21g: баны ад-тайлов живут и после перезапуска панели
+                _now = time.time()
+                for _bk, _bt in _m.get("bans", {}).items():
+                    if _now - float(_bt) < 240.0:
+                        ad_ban[_bk] = float(_bt)
     except Exception:
         spots = {}
 
@@ -2893,7 +2912,7 @@ def hud_overlay_tk():
     def save_mem():
         try:
             with open(HUD_MEM_FILE, "w", encoding="utf-8") as _f:
-                json.dump({"spots": spots}, _f)
+                json.dump({"spots": spots, "bans": ad_ban}, _f)
         except Exception:
             pass
     root.geometry(f"{PW}x{PH}+{pos[0]}+{pos[1]}")
@@ -3061,6 +3080,10 @@ def hud_overlay_tk():
         # v21f: анти-дребезг — после переезда 10 с панель не трогаем
         if mode in ("auto", "click") and time.time() - last_move[0] < 10.0:
             return
+        # v21g: зажатый Ctrl+Alt+H -> автоповтор клавиш долбит rerack десятки
+        # раз в секунду; manual не чаще 1 раза в 2 с
+        if mode == "manual" and time.time() - last_move[0] < 2.0:
+            return
         skip = (pos[0], pos[1]) if mode != "init" else None
         res, _zb, ads = analyze(mp, skip=skip)
         # v21f: недавно покинутые тайлы-«реклама» не трогаем 4 минуты
@@ -3105,6 +3128,12 @@ def hud_overlay_tk():
             y = by if bh <= h else by + (bh - h) // 2
             x = max(wx + 4, min(x, wr - w - 4))
             y = max(wy + 4, min(y, wb - h - 4))
+            if (ad_on[0] is not None
+                    and mem_key(ad_on[0][0], ad_on[0][1]) != mem_key(x, y)):
+                # v21g: прыгнули с одного тайла-«рекламы» на другой — старый
+                # в бан, иначе метание между двумя ложными тайлами (ад->ад)
+                ad_ban[mem_key(ad_on[0][0], ad_on[0][1])] = time.time()
+                save_mem()
             _hud_log(f"ad zone: colorful={a:.1f} {bw}x{bh} at +{bx}+{by} -> panel {w}x{h} at +{x}+{y}")
             # v21e: под панелью баннер не измерить — baseline высокий, съезд
             # по правилу ветки 2 (нашлось заведомо пустое место)
@@ -3147,6 +3176,7 @@ def hud_overlay_tk():
             if ad_on[0] is not None:
                 # v21f: покинули тайл «рекламы» — не возвращаемся на него 4 минуты
                 ad_ban[mem_key(ad_on[0][0], ad_on[0][1])] = time.time()
+                save_mem()
             ad_on[0] = None
             baseline[0] = b
         else:
