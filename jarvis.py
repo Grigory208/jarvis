@@ -1404,7 +1404,7 @@ GUI_SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gu
 OVERLAY_STOP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hud.stop")
 HUD_LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hud.log")
 HUD_MEM_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hud_memory.json")
-APP_VERSION = "v21h-tk"
+APP_VERSION = "v21i-tk"
 
 
 def _hud_log(msg):
@@ -2870,21 +2870,22 @@ def hud_overlay_tk():
         return res, zone_busy, ads
 
     def pick_from(res):
-        # v21h: размер подбирается ПОД пустое пространство — берём САМУЮ
-        # большую форму, которая влезает в пустое место; из одинаковых
-        # по размеру — ближе к текущему месту и без плохой истории
-        # (зоны, откуда панель уезжала, штрафуются памятью)
+        # v21i: размер — САМАЯ большая форма, влезающая в пустое место;
+        # из одинаковых по размеру — ближе к текущему; «дом» (место
+        # долгого простоя) имеет приоритет, когда оно пустое
         cur = (pos[0], pos[1])
-
-        def pen(r):
-            return max(0.0, spots.get(mem_key(r[1], r[2]), 0.0)) * 1.5
-
-        ok = [r for r in res if r[0] + pen(r) <= BUSY_OK]
+        ok = [r for r in res if r[0] <= BUSY_OK]
         if ok:
             amax = max(r[3] * r[4] for r in ok)
             big = [r for r in ok if r[3] * r[4] == amax]
+            hm = home[0]
+            if hm:
+                at_home = [r for r in big
+                           if abs(r[1] - hm[0]) < 96 and abs(r[2] - hm[1]) < 96]
+                if at_home:
+                    return at_home[0]
             return min(big, key=lambda r: abs(r[1] - cur[0]) + abs(r[2] - cur[1]))
-        return min(res, key=lambda r: (r[0] + pen(r), r[3] * r[4]))
+        return min(res, key=lambda r: r[0])
 
     pos = [wr - PW - 18, wb - PH - 18]
     sizes = [PW, PH]
@@ -2894,28 +2895,33 @@ def hud_overlay_tk():
     arrived = [None, 0.0]
     ad_ban = {}
     ad_votes = {}   # v21h: голоса «рекламы» для двойного подтверждения
-    # v21f память мест (бандит-эмуляция без ИИ): плохие зоны штрафуются
-    spots = {}
+    # v21i: вместо само-усиления (штрафы за собственные перезды только
+    # само-отравляли память) — внешние факты: баны ложных тайлов и «дом»
+    # (место, где панель простояла дольше 10 минут — туда возвращаемся)
+    home = [None]
     try:
         if os.path.exists(HUD_MEM_FILE):
             with open(HUD_MEM_FILE, encoding="utf-8") as _f:
                 _m = json.load(_f)
-                spots = _m.get("spots", {})
-                # v21g: баны ад-тайлов живут и после перезапуска панели
+                _hm = _m.get("home")
+                if isinstance(_hm, list) and len(_hm) == 2:
+                    home[0] = (int(_hm[0]), int(_hm[1]))
+                # баны ад-тайлов живут и после перезапуска панели
                 _now = time.time()
                 for _bk, _bt in _m.get("bans", {}).items():
                     if _now - float(_bt) < 240.0:
                         ad_ban[_bk] = float(_bt)
     except Exception:
-        spots = {}
+        home[0] = None
 
     def mem_key(x, y):
         return "%d,%d" % (int(x) // 96, int(y) // 96)
 
     def save_mem():
         try:
+            _hm = list(home[0]) if home[0] else None
             with open(HUD_MEM_FILE, "w", encoding="utf-8") as _f:
-                json.dump({"spots": spots, "bans": ad_ban}, _f)
+                json.dump({"home": _hm, "bans": ad_ban}, _f)
         except Exception:
             pass
     root.geometry(f"{PW}x{PH}+{pos[0]}+{pos[1]}")
@@ -3076,6 +3082,21 @@ def hud_overlay_tk():
         else:
             entry.focus_set()
 
+    def fit_at(zb, px, py, cw0, ch0):
+        # v21i: самая большая форма, влезающая в пустоту у точки (px,py);
+        # якоря: как есть, сдвиг влево, вверх — растём во все стороны
+        for fw, fh in SIZES:
+            if fw <= cw0 or fh <= ch0:
+                continue
+            cands = [(px, py), (px - (fw - cw0), py),
+                     (px, py - (fh - ch0)), (px - (fw - cw0), py - (fh - ch0))]
+            for ax, ay in cands:
+                if ax < wx or ay < wy or ax + fw > wr or ay + fh > wb:
+                    continue
+                if zb(ax, ay, fw, fh) <= BUSY_OK:
+                    return fw, fh, ax, ay
+        return None
+
     def rerack(mode):
         mp = grad_map()
         if mp is None:
@@ -3176,6 +3197,12 @@ def hud_overlay_tk():
                         _hud_log(f"grow-in-place: {nw}x{nh} at +{pos[0]}+{pos[1]}, ring busy={rb:.1f}")
                         return
             b, x, y, w, h = pick_from(res)
+            # v21i: подгоняем размер под реальную пустоту у найденной точки
+            if b <= BUSY_OK and ad_on[0] is None:
+                f = fit_at(_zb, x, y, w, h)
+                if f:
+                    w, h, x, y = f
+                    b = _zb(x, y, w, h)
             if mode in ("auto", "click"):
                 _hud_log(f"rescan: cur {sizes[0]}x{sizes[1]}@+{pos[0]}+{pos[1]}, "
                          f"best {w}x{h} busy={b:.1f}@+{x}+{y}")
@@ -3201,15 +3228,11 @@ def hud_overlay_tk():
             baseline[0] = b
         else:
             return
-        # v21f: уехали с места — обновляем его репутацию в памяти
+        # v21i: уехали с места — если там долго просидели, это наш «дом»
         if arrived[0] is not None and arrived[0] != (x, y):
             dtm = time.time() - arrived[1]
-            ka = mem_key(arrived[0][0], arrived[0][1])
-            if dtm < 25.0:
-                spots[ka] = spots.get(ka, 0.0) - 1.0
-                save_mem()
-            elif dtm > 600.0:
-                spots[ka] = spots.get(ka, 0.0) + 1.0
+            if dtm > 600.0:
+                home[0] = arrived[0]
                 save_mem()
         arrived[0], arrived[1] = (x, y), time.time()
         pos[0], pos[1] = x, y
