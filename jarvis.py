@@ -2,7 +2,8 @@
 # -*- coding: utf-8 -*-
 """JARVIS Lite — сверхлёгкий голосовой ассистент в стиле J.A.R.V.I.S.
 
-Текстовый режим:   python jarvis.py
+Полный запуск:     python jarvis.py          (окно-шар + HUD-чат + голос)
+Текстовый режим:   python jarvis.py text
 Голосовой режим:   python jarvis.py voice   (нужны pip-пакеты vosk и sounddevice)
 
 Ядро — только стандартная библиотека Python, ни одного pip-пакета.
@@ -1419,8 +1420,7 @@ def push_chat_event(who, text):
     except Exception:
         pass
 HUD_LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hud.log")
-HUD_MEM_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hud_memory.json")
-APP_VERSION = "v22a-tk"
+APP_VERSION = "v22b-tk"
 
 
 def _hud_log(msg):
@@ -1873,6 +1873,10 @@ def gui():
 
         threading.Thread(target=worker, daemon=True).start()
 
+    # v22b: голос сразу (отключить: JARVIS_VOICE=0)
+    if _gs.get("voice", os.environ.get("JARVIS_VOICE", "1") == "1"):
+        run_voice()
+
     history = [[]]
     last_action = [""]
     info_override = [""]
@@ -1927,6 +1931,8 @@ def gui():
     hud_mem = [0, 0.0]
     hud_proc = [None]
     atexit.register(_cleanup_hud_on_exit)
+    if hud_on[0]:
+        spawn_hud_overlay()   # v22b: HUD сразу
     if top_on[0]:
         apply_topmost(True)
     city_val = [CITY]
@@ -2733,11 +2739,6 @@ def hud_overlay_tk():
                 _hud_log(f"work area: x={wx} y={wy} w={wr - wx} h={wb - wy}")
         except Exception:
             pass
-    SIZES = [(380, 500), (380, 440), (320, 420), (300, 360)]
-    BUSY_OK = 3.0
-    AD_TH = 28.0    # цветность плитки
-    AD_GTH = 4.0    # текстура внутри (текст/графика, не плоская заливка)
-    AD_CTH = 10.0   # контраст с кольцом вокруг (баннер выделяется из фона)
     try:
         if os.path.exists(HUD_CHAT_FILE):
             os.remove(HUD_CHAT_FILE)
@@ -2745,208 +2746,8 @@ def hud_overlay_tk():
         pass
     scan_warn = [False]
 
-    def grad_map():
-        try:
-            from PIL import Image, ImageGrab
-            # v21g: снимаем ВЕСЬ экран. bbox в виртуальных координатах PIL
-            # трактовал как физические пиксели (DPI 125% -> окно захвата съезжало).
-            img = ImageGrab.grab().convert("RGB")
-        except Exception as exc:
-            if not scan_warn[0]:
-                scan_warn[0] = True
-                _hud_log(f"scan экрана недоступен: {exc}")
-                _hud_log("для авто-подбора места: pip install pillow")
-            return None
-        W = 96
-        H = max(28, int(W * img.height / max(1, img.width)))
-        # v21g: grab() отдаёт ФИЗИЧЕСКИЕ пиксели, а tkinter живёт в виртуальных
-        # (DPI 125%: виртуал = физ / 1.25). Дальше всё приводим к виртуальным.
-        ow, oh = float(img.width), float(img.height)
-        sx, sy = ow / float(W), oh / float(H)   # физ. px на ячейку сетки
-        kx, ky = dw / ow, dh / oh               # виртуальных px на физ. px
-        img = img.resize((W, H))
-        data = img.tobytes()
-        grad = [0.0] * (W * H)
-        colf = [0.0] * (W * H)
-        lum = [0.0] * (W * H)
-        hb = [-1] * (W * H)
-        for i in range(W * H):
-            o = i * 3
-            r, g, b = data[o], data[o + 1], data[o + 2]
-            colf[i] = float(max(r, g, b) - min(r, g, b))
-            lum[i] = (r * 3 + g * 6 + b) / 10.0
-            if colf[i] >= 60.0:
-                hb[i] = (r // 64) * 16 + (g // 64) * 4 + (b // 64)
-        for y in range(1, H):
-            row = y * W
-            for x in range(1, W):
-                i = row + x
-                grad[i] = abs(lum[i] - lum[i - 1]) + abs(lum[i] - lum[i - W])
-        return (grad, colf, hb, W, H, sx, sy, kx, ky)
-
-    def analyze(mp, skip=None):
-        grad, colf, hb, W, H, sx, sy, kx, ky = mp
-        # v21g: переводы из координат сетки (физ. пиксели) в виртуальные,
-        # в которых живёт tkinter и все зажимы окна
-        def vx_of(c):
-            return int(c * sx * kx)
-        def vy_of(c):
-            return int(c * sy * ky)
-        NW = (W + 1) * (H + 1)
-        tot = [0.0] * NW
-        totc = [0.0] * NW
-        for y in range(1, H + 1):
-            prev, row, gbase = (y - 1) * (W + 1), y * (W + 1), (y - 1) * W
-            rs = rc = 0.0
-            for x in range(1, W + 1):
-                gi = gbase + x - 1
-                rs += grad[gi]
-                rc += colf[gi]
-                tot[row + x] = tot[prev + x] + rs
-                totc[row + x] = totc[prev + x] + rc
-
-        def win(x0, y0, cw, ch, t):
-            return (t[(y0 + ch) * (W + 1) + x0 + cw]
-                    - t[y0 * (W + 1) + x0 + cw]
-                    - t[(y0 + ch) * (W + 1) + x0]
-                    + t[y0 * (W + 1) + x0])
-
-        TILES = [(360, 90), (300, 250), (320, 50)]
-        res, ads = [], []
-        for pw, ph in SIZES:
-            cw, ch = max(4, int(pw / sx)), max(4, int(ph / sy))
-            if cw + 6 > W or ch + 6 > H:
-                continue
-            bb, bx, by = None, 0, 0
-            for y0 in range(2, H - ch - 1, 3):
-                for x0 in range(2, W - cw - 1, 3):
-                    ox, oy = vx_of(x0), vy_of(y0)
-                    if skip and abs(ox - skip[0]) < 40 and abs(oy - skip[1]) < 40:
-                        continue
-                    v = win(x0, y0, cw, ch, tot) / (cw * ch)
-                    if bb is None or v < bb:
-                        bb, bx, by = v, x0, y0
-            if bb is not None:
-                res.append((bb, vx_of(bx), vy_of(by), pw, ph))
-        # реклама: отдельный поиск по баннерным плиткам (размеры типовых блоков)
-        def ad_like(x0, y0, cw, ch):
-            # одноцветная UI-шпанга (вкладки/тулбар) — не реклама:
-            # у баннера обычно несколько разных оттенков; фильтр v21d
-            chroma = 0
-            cnt = {}
-            for y in range(y0, min(y0 + ch, H)):
-                base = y * W
-                for x in range(x0, min(x0 + cw, W)):
-                    hbi = hb[base + x]
-                    if hbi >= 0:
-                        chroma += 1
-                        cnt[hbi] = cnt.get(hbi, 0) + 1
-            if chroma < 20:
-                return False
-            if chroma / float(cw * ch) < 0.30:
-                return False
-            dom = max(cnt.values()) / float(chroma)
-            buckets = sum(1 for v in cnt.values() if v / float(chroma) >= 0.10)
-            return dom <= 0.85 and buckets >= 2
-
-        for tw, th in TILES:
-            cw, ch = max(3, int(tw / sx)), max(2, int(th / sy))
-            if cw + 2 > W or ch + 2 > H:
-                continue
-            cands = []
-            for y0 in range(1, H - ch, 2):
-                for x0 in range(1, W - cw, 2):
-                    if skip:
-                        ax, ay = vx_of(x0), vy_of(y0)
-                        if abs(ax - skip[0]) < 40 and abs(ay - skip[1]) < 40:
-                            continue
-                    va = win(x0, y0, cw, ch, totc) / (cw * ch)
-                    if va >= AD_TH:
-                        cands.append((va, x0, y0))
-            cands.sort(key=lambda t: -t[0])
-            for va, x0, y0 in cands[:25]:
-                if not ad_like(x0, y0, cw, ch):
-                    continue
-                # v21e: внутри баннера есть текст/графика — не плоская заливка
-                vg = win(x0, y0, cw, ch, tot) / float(cw * ch)
-                if vg < AD_GTH:
-                    continue
-                # v21e: баннер выделяется из фона — вокруг него кольцо бледнее
-                px0, py0 = max(0, x0 - 8), max(0, y0 - 8)
-                px1, py1 = min(W, x0 + cw + 8), min(H, y0 + ch + 8)
-                rarea = (px1 - px0) * (py1 - py0) - cw * ch
-                rcol = (win(px0, py0, px1 - px0, py1 - py0, totc)
-                        - va * cw * ch) / max(1.0, float(rarea))
-                if va - rcol < AD_CTH:
-                    continue
-                ads.append((va, vx_of(x0), vy_of(y0), tw, th))
-                break
-        ads.sort(key=lambda t: -t[0])
-
-        def zone_busy(x, y, w, h):
-            x0 = min(max(0, int(x / (sx * kx))), W - 2)
-            y0 = min(max(0, int(y / (sy * ky))), H - 2)
-            cw = max(4, min(W - 1 - x0, int(w / (sx * kx))))
-            ch = max(4, min(H - 1 - y0, int(h / (sy * ky))))
-            return win(x0, y0, cw, ch, tot) / (cw * ch)
-
-        return res, zone_busy, ads
-
-    def pick_from(res):
-        # v21i: размер — САМАЯ большая форма, влезающая в пустое место;
-        # из одинаковых по размеру — ближе к текущему; «дом» (место
-        # долгого простоя) имеет приоритет, когда оно пустое
-        cur = (pos[0], pos[1])
-        ok = [r for r in res if r[0] <= BUSY_OK]
-        if ok:
-            amax = max(r[3] * r[4] for r in ok)
-            big = [r for r in ok if r[3] * r[4] == amax]
-            hm = home[0]
-            if hm:
-                at_home = [r for r in big
-                           if abs(r[1] - hm[0]) < 96 and abs(r[2] - hm[1]) < 96]
-                if at_home:
-                    return at_home[0]
-            return min(big, key=lambda r: abs(r[1] - cur[0]) + abs(r[2] - cur[1]))
-        return min(res, key=lambda r: r[0])
-
-    pos = [wr - PW - 18, wb - PH - 18]
+    pos = [wx + 10, wb - 114]   # v22b: компактный шар внизу слева
     sizes = [PW, PH]
-    baseline = [999.0]
-    ad_on = [None]
-    last_move = [0.0]
-    arrived = [None, 0.0]
-    ad_ban = {}
-    ad_votes = {}   # v21h: голоса «рекламы» для двойного подтверждения
-    # v21i: вместо само-усиления (штрафы за собственные перезды только
-    # само-отравляли память) — внешние факты: баны ложных тайлов и «дом»
-    # (место, где панель простояла дольше 10 минут — туда возвращаемся)
-    home = [None]
-    try:
-        if os.path.exists(HUD_MEM_FILE):
-            with open(HUD_MEM_FILE, encoding="utf-8") as _f:
-                _m = json.load(_f)
-                _hm = _m.get("home")
-                if isinstance(_hm, list) and len(_hm) == 2:
-                    home[0] = (int(_hm[0]), int(_hm[1]))
-                # баны ад-тайлов живут и после перезапуска панели
-                _now = time.time()
-                for _bk, _bt in _m.get("bans", {}).items():
-                    if _now - float(_bt) < 240.0:
-                        ad_ban[_bk] = float(_bt)
-    except Exception:
-        home[0] = None
-
-    def mem_key(x, y):
-        return "%d,%d" % (int(x) // 96, int(y) // 96)
-
-    def save_mem():
-        try:
-            _hm = list(home[0]) if home[0] else None
-            with open(HUD_MEM_FILE, "w", encoding="utf-8") as _f:
-                json.dump({"home": _hm, "bans": ad_ban}, _f)
-        except Exception:
-            pass
     root.geometry(f"{PW}x{PH}+{pos[0]}+{pos[1]}")
 
     canvas = tk.Canvas(root, width=PW, height=PH, bg=TC, highlightthickness=0)
@@ -2981,7 +2782,7 @@ def hud_overlay_tk():
     sub_id = canvas.create_text(104, 15, text=f"голограмма · чат · {APP_VERSION}",
                                 fill=DIM, anchor="w", font=("Segoe UI", 9))
     hint_id = canvas.create_text(104, 30,
-                                 text="Ctrl+Alt+J — чат · Ctrl+Alt+H — фоновое место · клик шапки — свернуть",
+                                 text="Ctrl+Alt+J — чат · клик шапки — свернуть · клик по шару — открыть",
                                  fill=DIM, anchor="w", font=("Segoe UI", 8))
     close_id = canvas.create_text(PW - 26, 24, text="✕", fill="#ff9c9c", font=("Segoe UI", 10))
 
@@ -3128,8 +2929,6 @@ def hud_overlay_tk():
         tx = wx + 10
         ty = max(wy + 10, wb - h - 10)
         pos[0], pos[1] = tx, ty
-        arrived[0], arrived[1] = (tx, ty), time.time()
-        last_move[0] = time.time()
         apply_place()
         y0 = wb + h  # полностью за нижним краем
         steps = 10
@@ -3162,167 +2961,6 @@ def hud_overlay_tk():
 
     entry.bind("<Key>", _entry_typed)
 
-    def fit_at(zb, px, py, cw0, ch0):
-        # v21i: самая большая форма, влезающая в пустоту у точки (px,py);
-        # якоря: как есть, сдвиг влево, вверх — растём во все стороны
-        for fw, fh in SIZES:
-            if fw <= cw0 or fh <= ch0:
-                continue
-            cands = [(px, py), (px - (fw - cw0), py),
-                     (px, py - (fh - ch0)), (px - (fw - cw0), py - (fh - ch0))]
-            for ax, ay in cands:
-                if ax < wx or ay < wy or ax + fw > wr or ay + fh > wb:
-                    continue
-                if zb(ax, ay, fw, fh) <= BUSY_OK:
-                    return fw, fh, ax, ay
-        return None
-
-    def rerack(mode):
-        mp = grad_map()
-        if mp is None:
-            return
-        # v21f: анти-дребезг — после переезда 10 с панель не трогаем
-        if mode in ("auto", "click") and time.time() - last_move[0] < 10.0:
-            return
-        # v21g: зажатый Ctrl+Alt+H -> автоповтор клавиш долбит rerack десятки
-        # раз в секунду; manual не чаще 1 раза в 2 с
-        if mode == "manual" and time.time() - last_move[0] < 2.0:
-            return
-        skip = (pos[0], pos[1]) if mode != "init" else None
-        res, _zb, ads = analyze(mp, skip=skip)
-        # v21f: недавно покинутые тайлы-«реклама» не трогаем 4 минуты
-        nowts = time.time()
-        ads = [t for t in ads
-               if nowts - ad_ban.get(mem_key(t[1], t[2]), -1e9) > 240.0]
-        # v21h: «реклама» должна подтвердиться в двух сканах подряд —
-        # одиночные пёстрые пятна интерфейса панель больше не двигают
-        # (нарочный запрос init/manual срабатывает сразу)
-        _need = 1 if mode in ("init", "manual") else 2
-        for _t in list(ads):
-            _k = mem_key(_t[1], _t[2])
-            _p = ad_votes.get(_k, (0, 0.0))
-            _c = _p[0] + 1 if nowts - _p[1] < 180.0 else 1
-            ad_votes[_k] = (_c, nowts)
-            if _c < _need:
-                ads.remove(_t)
-        for _k in list(ad_votes):
-            if nowts - ad_votes[_k][1] > 180.0:
-                del ad_votes[_k]
-        if not res and not ads:
-            return
-
-        def ring_busy(zb):
-            # пустота вокруг текущей панели (ring не включает саму панель)
-            x0, y0, w0, h0 = pos[0], pos[1], sizes[0], sizes[1]
-            P = 110
-            zones = []
-            if y0 - P >= wy:
-                zones.append((x0, y0 - P, w0, P))
-            if y0 + h0 + P <= wb:
-                zones.append((x0, y0 + h0, w0, P))
-            if x0 - P >= wx:
-                zones.append((x0 - P, y0, P, h0))
-            if x0 + w0 + P <= wr:
-                zones.append((x0 + w0, y0, P, h0))
-            if not zones:
-                return None
-            ta = tb = 0.0
-            for zx, zy, zw, zh in zones:
-                zw2, zh2 = min(zw, wr - zx), min(zh, wb - zy)
-                if zw2 <= 4 or zh2 <= 4:
-                    continue
-                ta += zw2 * zh2
-                tb += zb(zx, zy, zw2, zh2) * zw2 * zh2
-            return tb / ta if ta > 0 else None
-        x = y = w = h = None
-        on_ad = (ad_on[0] is not None and abs(pos[0] - ad_on[0][0]) < 60
-                 and abs(pos[1] - ad_on[0][1]) < 60)
-        # 1) реклама: накрываем самый пёстрый баннер (если ещё не на нём)
-        if ads and not (on_ad and mode in ("auto", "click")):
-            a, bx, by, bw, bh = ads[0]
-            full = [s for s in SIZES if s[0] >= bw and s[1] >= bh]
-            w, h = min(full, key=lambda s: s[0] * s[1]) if full else SIZES[-1]
-            x = bx if bw <= w else bx + (bw - w) // 2
-            y = by if bh <= h else by + (bh - h) // 2
-            x = max(wx + 4, min(x, wr - w - 4))
-            y = max(wy + 4, min(y, wb - h - 4))
-            if (ad_on[0] is not None
-                    and mem_key(ad_on[0][0], ad_on[0][1]) != mem_key(x, y)):
-                # v21g: прыгнули с одного тайла-«рекламы» на другой — старый
-                # в бан, иначе метание между двумя ложными тайлами (ад->ад)
-                ad_ban[mem_key(ad_on[0][0], ad_on[0][1])] = time.time()
-                save_mem()
-            _hud_log(f"ad zone: colorful={a:.1f} {bw}x{bh} at +{bx}+{by} -> panel {w}x{h} at +{x}+{y}")
-            # v21e: под панелью баннер не измерить — baseline высокий, съезд
-            # по правилу ветки 2 (нашлось заведомо пустое место)
-            baseline[0] = 90.0
-            ad_on[0] = (x, y)
-        # 2) пустое место
-        elif res:
-            # v21f: рост формы на месте — кольцо вокруг пустое, а панель сжата
-            if mode == "auto" and not compact[0] and ad_on[0] is None and _zb:
-                rb = ring_busy(_zb)
-                if rb is not None and rb <= 1.2:
-                    try:
-                        ix = SIZES.index((sizes[0], sizes[1]))
-                    except ValueError:
-                        ix = 0
-                    if ix > 0:
-                        nw, nh = SIZES[ix - 1]
-                        sizes[0], sizes[1] = nw, nh
-                        baseline[0] = rb
-                        if not compact[0]:
-                            draw_full_panel()
-                        apply_place()
-                        _hud_log(f"grow-in-place: {nw}x{nh} at +{pos[0]}+{pos[1]}, ring busy={rb:.1f}")
-                        return
-            b, x, y, w, h = pick_from(res)
-            # v21i: подгоняем размер под реальную пустоту у найденной точки
-            if b <= BUSY_OK and ad_on[0] is None:
-                f = fit_at(_zb, x, y, w, h)
-                if f:
-                    w, h, x, y = f
-                    b = _zb(x, y, w, h)
-            if mode in ("auto", "click"):
-                _hud_log(f"rescan: cur {sizes[0]}x{sizes[1]}@+{pos[0]}+{pos[1]}, "
-                         f"best {w}x{h} busy={b:.1f}@+{x}+{y}")
-                if ad_on[0] is not None:
-                    # v21e: сидим на баннере — съезжаем только на ОЧЕВИДНО
-                    # пустое место (b <= BUSY_OK), а не по старому гистерезису
-                    if b > BUSY_OK:
-                        return
-                else:
-                    # v21h: перезд, если (а) растём в заведомо пустое место
-                    # (размер под пустоту), (б) новое место ощутимо пустее,
-                    # (в) текущее место тесное, а найдено пустое
-                    grow = (w * h > sizes[0] * sizes[1])
-                    if not (b <= BUSY_OK and
-                            (grow or b + 1.0 < baseline[0]
-                             or baseline[0] > BUSY_OK)):
-                        return
-            if ad_on[0] is not None:
-                # v21f: покинули тайл «рекламы» — не возвращаемся на него 4 минуты
-                ad_ban[mem_key(ad_on[0][0], ad_on[0][1])] = time.time()
-                save_mem()
-            ad_on[0] = None
-            baseline[0] = b
-        else:
-            return
-        # v21i: уехали с места — если там долго просидели, это наш «дом»
-        if arrived[0] is not None and arrived[0] != (x, y):
-            dtm = time.time() - arrived[1]
-            if dtm > 600.0:
-                home[0] = arrived[0]
-                save_mem()
-        arrived[0], arrived[1] = (x, y), time.time()
-        pos[0], pos[1] = x, y
-        sizes[0], sizes[1] = w, h
-        last_move[0] = time.time()
-        if not compact[0]:
-            draw_full_panel()
-        apply_place()
-        _hud_log(f"place({mode}): {w}x{h} at +{x}+{y}")
-
     canvas.bind("<Button-1>", on_click)
 
     t0 = time.perf_counter()
@@ -3353,7 +2991,6 @@ def hud_overlay_tk():
         root.after(50, frame)
 
     stop_flag = [False]
-    move_flag = [False]
     thread_id = [0]
 
     def hotkey_loop():
@@ -3361,92 +2998,18 @@ def hud_overlay_tk():
         import ctypes.wintypes as wt
         u = ctypes.windll.user32
         thread_id[0] = ctypes.windll.kernel32.GetCurrentThreadId()
-        if u.RegisterHotKey(None, 1, 0x0001 | 0x0002, 0x4A):
-            u.RegisterHotKey(None, 2, 0x0001 | 0x0002, 0x48)
-            msg = wt.MSG()
-            while u.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
-                if msg.message == 0x0312:
-                    if msg.wParam == 2:
-                        move_flag[0] = True
-                    else:
-                        chat_flag[0] = True
-            u.UnregisterHotKey(None, 1)
-            u.UnregisterHotKey(None, 2)
-
-    threading.Thread(target=hotkey_loop, daemon=True).start()
-
-    click_flag = [0.0]
-    click_pos = [0, 0]
-    last_rescan = [0.0]
-
-    def click_fac():
-        try:
-            dpi = root.winfo_fpixels("1i")
-            return 96.0 / dpi if dpi > 96 else 1.0
-        except Exception:
-            return 1.0
-
-    cf = [click_fac()]
-    hook_tid = [0]
-    hook_keep = [None]
-
-    def mouse_loop():
-        import ctypes
-        import ctypes.wintypes as wt
-        u = ctypes.windll.user32
-
-        class MSLLHOOKSTRUCT(ctypes.Structure):
-            _fields_ = [("pt", wt.POINT), ("mouseData", wt.DWORD),
-                        ("flags", wt.DWORD), ("time", wt.DWORD),
-                        ("dwExtraInfo", ctypes.c_void_p)]
-
-        LRESULT = ctypes.c_ssize_t
-        HOOKPROC = ctypes.WINFUNCTYPE(LRESULT, ctypes.c_int, wt.WPARAM, wt.LPARAM)
-        # ВАЖНО (v21c): без argtypes ctypes передаёт lParam (64-битный
-        # указатель) как c_int -> OverflowError на каждом событии мыши,
-        # хук не вызывал CallNextHookEx и душ системный ввод мыши.
-        u.CallNextHookEx.restype = LRESULT
-        u.CallNextHookEx.argtypes = [ctypes.c_void_p, ctypes.c_int,
-                                     wt.WPARAM, wt.LPARAM]
-        u.UnhookWindowsHookEx.restype = wt.BOOL
-        u.UnhookWindowsHookEx.argtypes = [ctypes.c_void_p]
-        u.SetWindowsHookExW.restype = ctypes.c_void_p
-        u.SetWindowsHookExW.argtypes = [ctypes.c_int, HOOKPROC,
-                                        ctypes.c_void_p, wt.DWORD]
-
-        def proc(nCode, wParam, lParam):
-            try:
-                if nCode == 0 and wParam == 0x0202:  # WM_LBUTTONUP
-                    ms = MSLLHOOKSTRUCT.from_address(lParam)
-                    click_pos[0], click_pos[1] = ms.pt.x, ms.pt.y
-                    click_flag[0] = time.time()
-                return u.CallNextHookEx(None, nCode, wParam, lParam)
-            except Exception:
-                return 0
-
-        _proc = HOOKPROC(proc)
-        hh = u.SetWindowsHookExW(14, _proc, None, 0)  # WH_MOUSE_LL
-        if not hh:
-            _hud_log("mouse hook не встал")
-            return
-        hook_keep[0] = _proc  # ссылка на колбэк: без неё GC убивает активный хук
-        hook_tid[0] = ctypes.windll.kernel32.GetCurrentThreadId()
+        u.RegisterHotKey(None, 1, 0x0001 | 0x0002, 0x4A)
         msg = wt.MSG()
         while u.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
-            pass
-        u.UnhookWindowsHookEx(hh)
+            if msg.message == 0x0312 and msg.wParam == 1:
+                chat_flag[0] = True
+        u.UnregisterHotKey(None, 1)
 
-    threading.Thread(target=mouse_loop, daemon=True).start()
+    threading.Thread(target=hotkey_loop, daemon=True).start()
 
     ticks = [0]
 
     def poll():
-        if move_flag[0]:
-            move_flag[0] = False
-            try:
-                rerack("manual")
-            except Exception:
-                pass
         if chat_flag[0]:
             chat_flag[0] = False
             if chat_visible[0]:
@@ -3469,32 +3032,6 @@ def hud_overlay_tk():
         now = time.time()
         if chat_visible[0] and now > chat_hide_at[0]:
             hide_chat()
-        if (click_flag[0] and now - click_flag[0] >= 1.5
-                and now - last_rescan[0] >= 4.0 and not chat_visible[0]):
-            click_flag[0] = 0.0
-            last_rescan[0] = now
-            if not busy[0]:
-                cxp, cyp = click_pos
-                cw2, ch2 = (CPW, CPH) if compact[0] else (sizes[0], sizes[1])
-                inside = False
-                for fac in (1.0, cf[0]):
-                    ax, ay = cxp * fac, cyp * fac
-                    if pos[0] - 8 <= ax <= pos[0] + cw2 + 8 and pos[1] - 8 <= ay <= pos[1] + ch2 + 8:
-                        inside = True
-                        break
-                if not inside:
-                    try:
-                        rerack("click")
-                    except Exception:
-                        pass
-        ticks[0] += 1
-        if ticks[0] >= 75:
-            ticks[0] = 0
-            if not busy[0] and not chat_visible[0]:
-                try:
-                    rerack("auto")
-                except Exception:
-                    pass
         if stop_flag[0] or os.path.exists(OVERLAY_STOP_FILE):
             try:
                 os.remove(OVERLAY_STOP_FILE)
@@ -3502,19 +3039,16 @@ def hud_overlay_tk():
                 pass
             if thread_id[0]:
                 ctypes.windll.user32.PostThreadMessageW(thread_id[0], 0x0012, 0, 0)
-            if hook_tid[0]:
-                ctypes.windll.user32.PostThreadMessageW(hook_tid[0], 0x0012, 0, 0)
             root.destroy()
             return
         root.after(400, poll)
 
-    try:
-        rerack("init")
-    except Exception:
-        pass
+    # v22b: стартуем компактным шаром внизу слева — без скана экрана
+    pos[0], pos[1] = wx + 10, max(wy + 10, wb - CPH - 10)
+    show_compact(True)
     poll()
     frame()
-    _hud_log(f"tk overlay v21 shown {sizes[0]}x{sizes[1]} at +{pos[0]}+{pos[1]}")
+    _hud_log(f"tk overlay {APP_VERSION} shown {sizes[0]}x{sizes[1]} at +{pos[0]}+{pos[1]}")
     root.mainloop()
 
 
@@ -3832,6 +3366,7 @@ if __name__ == "__main__":
         elif len(sys.argv) > 1 and sys.argv[1].lower() in ("voice", "-v", "голос", "голосовой"):
             main_voice()
         else:
-            main_text()
+            # v22b: запуск без аргументов — всё сразу: окно-шар + HUD + голос
+            gui()
     except KeyboardInterrupt:
         print(f"\nJARVIS отключён, {MGMT}.")
