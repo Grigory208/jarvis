@@ -75,7 +75,10 @@ MEMORY_FILE = os.environ.get(
 MEMORY_MAX = 100          # максимум фактов в постоянной памяти
 
 CITY = os.environ.get("JARVIS_CITY", "москва")   # город погоды по умолчанию
-REMINDERS = []            # активные напоминания сессии: {"text", "at"}
+REMINDERS_FILE = os.environ.get(
+    "JARVIS_REMINDERS",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "reminders.json"))
+REMINDERS = []            # календарь напоминаний: {"text", "at", "repeat"}, файл reminders.json
 
 WMO_CODE = {
     0: "ясно", 1: "почти ясно", 2: "переменная облачность", 3: "пасмурно",
@@ -505,77 +508,229 @@ def weather_reply(query):
     return ", ".join(parts) + f", {MGMT}."
 
 
-def schedule_reminder(text, delay_s, engine):
-    at = time.time() + delay_s
-    entry = {"text": text, "at": at}
-    REMINDERS.append(entry)
-    def fire():
-        if entry in REMINDERS:
-            REMINDERS.remove(entry)
-        print(f"\n[ напоминание: {text} ]")
-        speak(engine, f"Напоминаю: {text}, {MGMT}.")
-    timer = threading.Timer(delay_s, fire)
+def load_reminders():
+    try:
+        with open(REMINDERS_FILE, encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, list) else []
+    except (OSError, ValueError):
+        return []
+
+
+def save_reminders():
+    try:
+        with open(REMINDERS_FILE, "w", encoding="utf-8") as fh:
+            json.dump(REMINDERS, fh, ensure_ascii=False, indent=1)
+    except OSError:
+        pass
+
+
+_REMINDERS_RESTORED = [False]
+
+
+def restore_reminders(engine):
+    """v23: поднять напоминания из reminders.json после перезапуска."""
+    if _REMINDERS_RESTORED[0]:
+        return
+    _REMINDERS_RESTORED[0] = True
+    REMINDERS.extend(load_reminders())
+    if REMINDERS:
+        for entry in list(REMINDERS):
+            arm_reminder(entry, engine)
+        print(f"[ напоминания: восстановлено {len(REMINDERS)} из reminders.json ]")
+
+
+def arm_reminder(entry, engine):
+    delay = max(0.5, entry["at"] - time.time())
+    timer = threading.Timer(delay, fire_reminder, args=(entry, engine))
     timer.daemon = True
     timer.start()
 
 
+def fire_reminder(entry, engine):
+    if entry not in REMINDERS:
+        return
+    REMINDERS.remove(entry)
+    if entry.get("repeat") in ("daily", "weekly"):
+        entry["at"] += 86400 if entry["repeat"] == "daily" else 7 * 86400
+        REMINDERS.append(entry)
+    save_reminders()
+    msg = f"Напоминаю: {entry['text']}, {MGMT}."
+    print(f"\n[ напоминание: {entry['text']} ]")
+    push_chat_event("j", f"Напоминание: {entry['text']}")
+    speak(engine, msg)
+    if entry in REMINDERS:
+        arm_reminder(entry, engine)
+
+
+def schedule_reminder(text, at_ts, engine, repeat="none"):
+    entry = {"text": text, "at": float(at_ts), "repeat": repeat}
+    REMINDERS.append(entry)
+    save_reminders()
+    arm_reminder(entry, engine)
+
+
+def human_when(at_ts):
+    dt = time.localtime(at_ts)
+    hm = time.strftime("%H:%M", dt)
+    now = time.time()
+    if at_ts - now < 90:
+        return f"через {int(at_ts - now)} сек"
+    if at_ts - now < 3600:
+        return f"через {int((at_ts - now) // 60)} мин"
+    if time.strftime("%d.%m", dt) == time.strftime("%d.%m", time.localtime()):
+        return "сегодня в " + hm
+    if time.strftime("%d.%m", dt) == time.strftime("%d.%m", time.localtime(now + 86400)):
+        return "завтра в " + hm
+    return time.strftime("%d.%m в %H:%M", dt)
+
+
+_WEEKDAY_RU = {"понедельник": 0, "вторник": 1, "среду": 2, "четверг": 3,
+               "пятницу": 4, "субботу": 5, "воскресенье": 6}
+_DAY_OFFSET_RU = {"сегодня": 0, "завтра": 1, "послезавтра": 2}
+_DAYPART_RU = {"утром": 9, "днём": 13, "днем": 13, "вечером": 19, "ночью": 23}
+
+
+def parse_when(rest):
+    """Текст 'завтра в 8 вечера позвонить маме' -> (timestamp, repeat, 'позвонить маме')."""
+    repeat = "none"
+    if re.search(r"кажд\w+\s+день\w*|ежедневно|по будням", rest):
+        repeat = "daily"
+        rest = re.sub(r"кажд\w+\s+день\w*|ежедневно|по будням", " ", rest)
+    elif re.search(r"кажд\w+\s+недел\w*|еженедельно", rest):
+        repeat = "weekly"
+        rest = re.sub(r"кажд\w+\s+недел\w*|еженедельно", " ", rest)
+
+    now = time.time()
+    lt = time.localtime()
+    day_off = 0
+    m = re.search(r"\b(сегодня|завтра|послезавтра)\b", rest)
+    if m:
+        day_off = _DAY_OFFSET_RU[m.group(1)]
+        rest = re.sub(r"\b" + m.group(1) + r"\b", " ", rest, count=1)
+    wd_fwd = None
+    m = re.search(r"(?:в|во)\s+(понедельник|вторник|среду|четверг|пятницу|субботу|воскресенье)", rest)
+    if m:
+        wd_fwd = _WEEKDAY_RU[m.group(1)]
+        rest = rest.replace(m.group(0), " ", 1)
+    daypart = None
+    m = re.search(r"\b(утром|днём|днем|вечером|ночью)\b", rest)
+    if m:
+        daypart = _DAYPART_RU[m.group(1)]
+        rest = rest.replace(m.group(0), " ", 1)
+
+    # относительное: "через 10 минут", "через полчаса", "через два часа", "через полтора часа"
+    delay = None
+    small = {"один": 1, "одну": 1, "одна": 1, "два": 2, "две": 2, "три": 3, "четыре": 4,
+             "пять": 5, "шесть": 6, "семь": 7, "восемь": 8, "девять": 9, "десять": 10,
+             "одиннадцать": 11, "двенадцать": 12, "пятнадцать": 15, "двадцать": 20,
+             "тридцать": 30, "сорок": 40, "пятьдесят": 50, "шестьдесят": 60,
+             "девяносто": 90, "полтора": 1.5, "полторы": 1.5, "сто": 100}
+    m_half = re.match(r"через\s+(?:полчаса|пол\s+часа|полчасика)\s*(.*)", rest)
+    m_txt = re.match(r"через\s+(.+)", rest)
+    if m_half:
+        delay, rest = 1800, m_half.group(1)
+    elif m_txt:
+        tail_words = m_txt.group(1).split()
+        idx_unit = None
+        for i, w in enumerate(tail_words):
+            if re.fullmatch(r"секунд\w*|сек|минут\w*|мин|час\w*|ч", w):
+                idx_unit = i
+                break
+        if idx_unit is not None:
+            n = 1
+            numwords = tail_words[:idx_unit]
+            if numwords:
+                try:
+                    n = float(numwords[0])
+                except ValueError:
+                    vals, ok = [], True
+                    for w in numwords:
+                        v = small.get(w)
+                        if v is None:
+                            ok = False
+                            break
+                        vals.append(v)
+                    n = sum(vals) if ok else 0
+            if n:
+                unit = tail_words[idx_unit]
+                mult = 3600 if unit.startswith(("час", "ч")) else (60 if unit.startswith("мин") else 1)
+                delay = max(1, int(n * mult))
+                rest = " ".join(tail_words[idx_unit + 1:])
+
+    # абсолютное: "в 8", "в 15:30", "в 8 вечера"
+    hh, mm = None, 0
+    m = re.search(r"(?:в|во)\s+(\d{1,2})(?:[:.](\d{2}))?\s*(утра|дня|вечера|ночи)?", rest)
+    if m:
+        hh = int(m.group(1))
+        mm = int(m.group(2) or 0)
+        if m.group(3) in ("дня", "вечера") and hh < 12:
+            hh += 12
+        if m.group(3) == "ночи" and hh == 12:
+            hh = 0
+        if not m.group(3) and daypart is not None:
+            if (daypart in (13, 19) and hh < 12) or (daypart == 23 and hh >= 7):
+                hh += 12
+        rest = rest.replace(m.group(0), " ", 1)
+    elif daypart is not None:
+        hh = daypart
+
+    rest = " ".join(rest.split())
+    if delay is not None:
+        return now + delay, repeat, rest
+    if hh is None:
+        return now + 3600, repeat, rest          # время не указано — напомню через час
+    if wd_fwd is not None:
+        days = (wd_fwd - lt.tm_wday) % 7
+        at_ts = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday + days + day_off, hh, mm, 0, 0, 0, -1))
+        if at_ts <= now:
+            at_ts += 7 * 86400
+    else:
+        at_ts = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday + day_off, hh, mm, 0, 0, 0, -1))
+        if at_ts <= now:
+            at_ts += 86400
+    return at_ts, repeat, " ".join(rest.split())
+
+
 def reminder_reply(query, engine):
+    """v23: календарь напоминаний — сохраняются в reminders.json и переживают перезапуск."""
     q = query.strip().lower()
-    m = re.match(r"(?:!)?напомни(?:ть)?(?:\s+мне)?\s+(.+)", q)
+    m_del = re.match(r"(?:!)?удал\w*\s+(?:все\s+|всё\s+|всех\s+)?(?:мои\s+)?напоминан\w*\s*(.*)", q)
+    if m_del:
+        tail = re.sub(r"^(?:все|всё|про)\s+", "", m_del.group(1).strip(" .!")).strip(" .!")
+        if not tail:
+            n = len(REMINDERS)
+            REMINDERS.clear()
+            save_reminders()
+            return f"Удалил все напоминания ({n}), {MGMT}."
+        def _is_hit(rm):
+            cand = rm["text"].lower()
+            stems = tail[:5]
+            return tail in cand or (len(tail) >= 5 and cand.startswith(stems))
+        hit = next((r for r in REMINDERS if _is_hit(r)), None)
+        if hit:
+            REMINDERS.remove(hit)
+            save_reminders()
+            return f"Удалил напоминание «{hit['text']}», {MGMT}."
+        return f"Такого напоминания не нашёл, {MGMT}."
+    m = re.match(r"(?:!)?напомн(?:и|ить)(?:\s+мне)?\s+(.+)", q)
     if not m:
-        if re.search(r"каки[еёйх]\s+напоминан|что\s+напоминан|напоминан\w*$", q):
+        if re.search(r"напоминан\w*\s*$|мои\s+напоминан|список\s+напоминан|какие\s+напоминан|что\s+напоминан", q):
             if REMINDERS:
-                left = "; ".join(f"{r['text']} (через {int((r['at'] - time.time()) / 60) + 1} мин)"
-                                 for r in REMINDERS[:5])
+                left = "; ".join(f"«{r['text']}» ({human_when(r['at'])})"
+                                 for r in sorted(REMINDERS, key=lambda x: x["at"])[:6])
                 return f"Активных напоминаний: {len(REMINDERS)}: {left}, {MGMT}."
             return f"Активных напоминаний нет, {MGMT}."
         return None
-    rest = m.group(1).strip()
-    delay, text = None, ""
-    m_half = re.match(r"через\s+(?:полчаса|пол\s+часа|полчасика)\s*(.*)", rest)
-    m_at = re.match(r"(?:в|во)\s+(\d{1,2})[:.](\d{2})\s*(.*)", rest)
-    m_num = re.match(r"через\s+([\dа-яё]+)\s*(секунд\w*|сек\b|минут\w*|мин\b|час\w*|ч\b)\s*(.*)", rest)
-    m_word = re.match(r"через\s+(минуту|секунду|час|часа|пять\s+минут|десять\s+минут|"
-                      r"пятнадцать\s+минут|двадцать\s+минут|тридцать\s+минут)\s*(.*)", rest)
-    if m_half:
-        delay, text = 1800, m_half.group(1).strip()
-    elif m_at:
-        hh, mm = int(m_at.group(1)), int(m_at.group(2))
-        if hh < 24 and mm < 60:
-            target = time.localtime()
-            at = time.mktime((target.tm_year, target.tm_mon, target.tm_mday, hh, mm, 0, 0, 0, -1))
-            while at <= time.time():
-                at += 86400
-            delay, text = int(at - time.time()), m_at.group(3).strip()
-    elif m_word:
-        mult = {"секунду": 1, "минуту": 60, "час": 3600, "часа": 3600,
-                "пять минут": 300, "десять минут": 600, "пятнадцать минут": 900,
-                "двадцать минут": 1200, "тридцать минут": 1800}[m_word.group(1)]
-        delay, text = mult, m_word.group(2).strip()
-    elif m_num:
-        raw, unit, text = m_num.group(1), m_num.group(2), m_num.group(3)
-        try:
-            n = int(raw)
-        except ValueError:
-            n = NUMBER_WORDS.get(raw)
-        if n is not None:
-            mult = 3600 if unit.startswith(("час", "ч")) else (60 if unit.startswith("мин") else 1)
-            delay, text = max(1, n) * mult, m_num.group(3).strip()
-    elif m_word:
-        mult = {"секунду": 1, "минуту": 60, "час": 3600, "часа": 3600,
-                "пять минут": 300, "десять минут": 600, "пятнадцать минут": 900,
-                "двадцать минут": 1200, "тридцать минут": 1800}[m_word.group(1)]
-        delay, text = mult, m_word.group(2).strip()
-    if delay is None:
-        delay, text = 3600, rest          # время не указано — напомню через час
+    at_ts, repeat, text = parse_when(m.group(1).strip())
     text = text.strip(" .!") or "без описания"
-    human = (f"через {delay // 60} минут" if delay >= 120 and delay % 3600 else
-             f"через {delay / 60:.0f} мин" if delay > 90 else f"через {delay} сек")
-    if delay >= 3600 and delay % 3600 == 0:
-        human = f"через {delay // 3600} ч"
-    schedule_reminder(text, delay, engine)
-    return f"Хорошо: {text} — {human}, {MGMT}."
-
+    schedule_reminder(text, at_ts, engine, repeat)
+    rep_word = ""
+    if repeat == "daily":
+        rep_word = " (повтор: каждый день)"
+    elif repeat == "weekly":
+        rep_word = " (повтор: каждую неделю)"
+    return f"Хорошо: «{text}» — {human_when(at_ts)}{rep_word}, {MGMT}."
 
 def briefing_reply():
     lines = [f"Сейчас {time.strftime(('%d.%m.%Y, %H:%M'))}"]
@@ -811,6 +966,8 @@ TRANSLIT = {
     "проводник": "explorer", "провадник": "explorer",
     "консоль": "cmd", "командная": "cmd",
     "параметры": "ms-settings:", "настройки": "ms-settings:", "стеттингс": "ms-settings:",
+    "календарь": "ms-calendar:", "календар": "ms-calendar:", "календари": "ms-calendar:",
+    "календарик": "ms-calendar:",
     "студия": "code", "студию": "code", "студио": "code", "визуал": "code", "визвал": "code",
     "фотошоп": "photoshop", "ворд": "winword", "ворде": "winword", "верд": "winword",
     "эксель": "excel",
@@ -819,6 +976,7 @@ TRANSLIT = {
 # Как называем программу в ответе (иначе espeak прочитает 'ms-settings:' вслух)
 APP_DISPLAY = {
     "ms-settings:": "настройки Windows",
+    "ms-calendar:": "календарь виндовс",
     "code": "визуал студио",
     "winword": "ворд",
     "excel": "эксель",
@@ -863,7 +1021,7 @@ def open_app(name):
         return False
     try:
         if os.name == "nt":
-            if name.startswith(("ms-settings:", "http")):
+            if name.startswith(("ms-settings:", "ms-calendar:", "http")):
                 os.startfile(name)     # noqa: S606
             else:
                 subprocess.run(["cmd", "/c", "start", "", name], check=False)
@@ -1234,6 +1392,8 @@ def main_text():
     print(f"=== JARVIS Lite | режим: {mode} | озвучка: {engine or 'нет'} ===")
     print(f"Готов к работе, {MGMT}. ('выход' — завершить, 'voice' — голосовой режим)\n")
 
+    restore_reminders(engine)
+
     history = []
 
     while True:
@@ -1315,6 +1475,7 @@ def main_voice():
     mode = ("Mistral API" if API_KEY else
             f"Ollama/{LOCAL_MODEL} -> Pollinations/{POLLINATIONS_MODEL}")
     print(f"=== JARVIS Lite | голосовой режим | {mode} ===")
+    restore_reminders(engine)
     print(f"Скажите: {' / '.join(WAKE_WORDS)} + команда. (Ctrl+C — выход)\n")
     speak(engine, f"Слушаю, {MGMT}.")
 
@@ -1420,7 +1581,7 @@ def push_chat_event(who, text):
     except Exception:
         pass
 HUD_LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hud.log")
-APP_VERSION = "v22b-tk"
+APP_VERSION = "v23-tk"
 
 
 def _hud_log(msg):
@@ -1608,6 +1769,7 @@ def gui():
     if not engine:
         print("[ предупреждение: espeak-ng не найден — озвучки не будет. "
               "Автоустановка: python jarvis.py setup voice ]")
+    restore_reminders(engine)
 
     CORE = (120, 198, 255)
     DEEP = (26, 62, 104)
